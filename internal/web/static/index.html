@@ -130,6 +130,14 @@ input::placeholder{color:var(--text3)}
 .btn-logout{color:var(--red);border-color:rgba(244,63,94,.2)}
 .btn-logout:hover{background:var(--red);border-color:var(--red);color:#fff}
 
+/* Log terminal */
+.log-output{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:10px;font-family:'SF Mono',Consolas,'Monaco',monospace;font-size:11px;line-height:1.6;color:var(--text2);height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.log-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.log-status{font-size:11px;font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px;color:var(--text3)}
+.log-line-error{color:var(--red)}
+.log-line-warn{color:#f59e0b}
+.log-line-info{color:var(--text)}
+
 /* Responsive */
 @media(max-width:640px){
   .stats{grid-template-columns:1fr 1fr}
@@ -207,11 +215,21 @@ input::placeholder{color:var(--text3)}
     <div style="overflow-x:auto">
       <table>
         <thead>
-          <tr><th>Name</th><th>Endpoint</th><th>IPv4</th><th>Status</th><th>Actions</th></tr>
+          <tr><th>Name</th><th>Endpoint</th><th>IPv4</th><th>External IP</th><th>Status</th><th>Actions</th></tr>
         </thead>
         <tbody id="accountsTable"></tbody>
       </table>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Logs <span class="log-status" id="logsStatus">disconnected</span></h2>
+    <div class="log-controls">
+      <button id="btnLogsToggle" onclick="toggleLogs()">Connect</button>
+      <button onclick="clearLogs()">Clear</button>
+      <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="autoScroll" checked> Auto-scroll</label>
+    </div>
+    <div id="logOutput" class="log-output"></div>
   </div>
 </div>
 
@@ -276,6 +294,7 @@ input::placeholder{color:var(--text3)}
 <script>
 const API = '';
 let refreshTimer = null;
+const ipCache = {};
 
 // Auth helpers
 function getAuth() { return localStorage.getItem('warp_auth'); }
@@ -300,6 +319,7 @@ async function api(path, opts = {}) {
 }
 
 function showLogin() {
+  closeLogs();
   document.getElementById('loginScreen').classList.remove('hidden');
   document.getElementById('dashboard').style.display = 'none';
   stopRefresh();
@@ -347,6 +367,7 @@ async function login() {
 }
 
 function logout() {
+  closeLogs();
   clearAuth();
   showLogin();
 }
@@ -420,10 +441,12 @@ async function refresh() {
         <td>${esc(a.name)}</td>
         <td>${esc(a.endpoint)}:${a.endpoint_port}</td>
         <td>${esc(a.ipv4)}</td>
+        <td id="ip-${a.id}" style="font-family:'SF Mono',Consolas,monospace;font-size:12px">${ipCache[a.id] ? esc(ipCache[a.id]) : '<span style="color:var(--text3)">-</span>'}</td>
         <td class="${a.enabled ? 'enabled' : 'disabled'}">${a.enabled ? 'Enabled' : 'Disabled'}</td>
         <td class="actions">
           <button onclick="toggleAccount('${a.id}', ${!a.enabled})">${a.enabled ? 'Disable' : 'Enable'}</button>
           <button onclick="editEndpoint('${a.id}','${esc(a.endpoint)}',${a.endpoint_port})">Endpoint</button>
+          <button onclick="checkIP('${a.id}',this)" ${a.enabled ? '' : 'disabled'}>IP</button>
           <button class="danger" onclick="deleteAccount('${a.id}','${esc(a.name)}')">Delete</button>
         </td>
       </tr>
@@ -575,6 +598,24 @@ async function triggerUpdate() {
   }
 }
 
+async function checkIP(id, btn) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '...';
+  try {
+    const data = await api(`/api/accounts/${id}/ip`);
+    ipCache[id] = data.ip;
+    const cell = document.getElementById('ip-' + id);
+    if (cell) cell.textContent = data.ip;
+    toast('IP: ' + data.ip);
+  } catch(e) {
+    if (e.message !== 'unauthorized') toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
 async function loadVersion() {
   try {
     const data = await api('/api/version');
@@ -595,6 +636,58 @@ async function loadVersion() {
     }
   } catch (e) { /* ignore */ }
 }
+
+// Log streaming
+let logsSSE = null;
+
+function toggleLogs() { logsSSE ? closeLogs() : openLogs(); }
+
+function openLogs() {
+  const auth = getAuth();
+  const url = '/api/logs' + (auth ? '?auth=' + encodeURIComponent(auth) : '');
+  logsSSE = new EventSource(url);
+  setLogsStatus('connecting...', 'var(--accent)');
+  document.getElementById('btnLogsToggle').textContent = 'Disconnect';
+  logsSSE.onopen = function() { setLogsStatus('connected', 'var(--green)'); };
+  logsSSE.onmessage = function(e) { appendLog(e.data); };
+  logsSSE.onerror = function() {
+    if (logsSSE && logsSSE.readyState === EventSource.CLOSED) {
+      logsSSE = null;
+      document.getElementById('btnLogsToggle').textContent = 'Connect';
+      setLogsStatus('disconnected', 'var(--red)');
+    } else {
+      setLogsStatus('reconnecting...', 'var(--accent)');
+    }
+  };
+}
+
+function closeLogs() {
+  if (logsSSE) { logsSSE.close(); logsSSE = null; }
+  document.getElementById('btnLogsToggle').textContent = 'Connect';
+  setLogsStatus('disconnected', 'var(--text3)');
+}
+
+function setLogsStatus(text, color) {
+  const el = document.getElementById('logsStatus');
+  el.textContent = text;
+  el.style.color = color;
+}
+
+function appendLog(line) {
+  const output = document.getElementById('logOutput');
+  const span = document.createElement('span');
+  const lc = line.toLowerCase();
+  if (lc.includes('error')) span.className = 'log-line-error';
+  else if (lc.includes('warn')) span.className = 'log-line-warn';
+  else span.className = 'log-line-info';
+  span.textContent = line + '\n';
+  output.appendChild(span);
+  if (document.getElementById('autoScroll').checked) output.scrollTop = output.scrollHeight;
+  // Cap at 2000 lines to avoid memory bloat
+  while (output.children.length > 2000) output.removeChild(output.firstChild);
+}
+
+function clearLogs() { document.getElementById('logOutput').innerHTML = ''; }
 
 checkAuth();
 </script>

@@ -2,9 +2,11 @@ package web
 
 import (
 	"embed"
+	"encoding/base64"
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 //go:embed static
@@ -38,6 +40,7 @@ func (s *Server) ListenAndServe() error {
 	apiMux.HandleFunc("POST /api/accounts/batch", s.handler.BatchCreateAccounts)
 	apiMux.HandleFunc("DELETE /api/accounts/{id}", s.handler.DeleteAccount)
 	apiMux.HandleFunc("PATCH /api/accounts/{id}", s.handler.UpdateAccount)
+	apiMux.HandleFunc("GET /api/accounts/{id}/ip", s.handler.CheckAccountIP)
 	apiMux.HandleFunc("GET /api/settings", s.handler.GetSettings)
 	apiMux.HandleFunc("PUT /api/settings", s.handler.UpdateSettings)
 	apiMux.HandleFunc("POST /api/engine/restart", s.handler.RestartEngine)
@@ -45,6 +48,7 @@ func (s *Server) ListenAndServe() error {
 	apiMux.HandleFunc("GET /api/version", s.handler.GetVersion)
 	apiMux.HandleFunc("GET /api/update/check", s.handler.CheckUpdate)
 	apiMux.HandleFunc("POST /api/update", s.handler.TriggerUpdate)
+	apiMux.HandleFunc("GET /api/logs", s.handler.StreamLogs)
 
 	if s.user != "" {
 		mux.Handle("/api/", s.basicAuth(apiMux))
@@ -73,6 +77,18 @@ func (s *Server) basicAuth(next http.Handler) http.Handler {
 		}
 
 		user, pass, ok := r.BasicAuth()
+
+		// EventSource (SSE) cannot send custom headers; accept ?auth= query param as fallback
+		if !ok {
+			if authParam := r.URL.Query().Get("auth"); authParam != "" {
+				if decoded, err := base64.StdEncoding.DecodeString(authParam); err == nil {
+					if parts := strings.SplitN(string(decoded), ":", 2); len(parts) == 2 {
+						user, pass, ok = parts[0], parts[1], true
+					}
+				}
+			}
+		}
+
 		if !ok || user != s.user || pass != s.pass {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return

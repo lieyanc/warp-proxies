@@ -15,6 +15,25 @@ import (
 // ErrNoAccounts is returned by BuildOptions when there are no enabled accounts.
 var ErrNoAccounts = fmt.Errorf("no enabled accounts")
 
+// WGTagForAccount returns the sing-box outbound tag for the account with the given ID.
+// enabledAccounts must be in the same order as returned by store.GetEnabledAccounts().
+// Returns "" if the account is not found in the list.
+func WGTagForAccount(enabledAccounts []store.Account, accountID string) string {
+	tagCount := make(map[string]int)
+	for _, acc := range enabledAccounts {
+		baseTag := fmt.Sprintf("wg-%s", acc.Name)
+		tagCount[baseTag]++
+		tag := baseTag
+		if tagCount[baseTag] > 1 {
+			tag = fmt.Sprintf("%s-%d", baseTag, tagCount[baseTag])
+		}
+		if acc.ID == accountID {
+			return tag
+		}
+	}
+	return ""
+}
+
 func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Options, error) {
 	if len(accounts) == 0 {
 		return nil, ErrNoAccounts
@@ -135,7 +154,7 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 	selectorTags = append(selectorTags, wgTags...)
 
 	defaultTag := "auto"
-	if settings.RotationMode == "random" {
+	if settings.RotationMode == "random" || settings.RotationMode == "roundrobin" {
 		defaultTag = wgTags[0]
 	}
 
