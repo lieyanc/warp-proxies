@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -55,19 +56,25 @@ func main() {
 		return engine.BuildOptions(accounts, st)
 	})
 
-	// Start engine
+	// Start engine (will be idle if no accounts yet)
 	if err := eng.Start(); err != nil {
 		slog.Error("start engine", "err", err)
 		os.Exit(1)
 	}
 
-	// Start rotator if random mode
-	if settings.RotationMode == "random" {
+	// Start rotator if random mode and engine is running
+	if settings.RotationMode == "random" && eng.IsRunning() {
 		startRotator(eng, s)
 	}
 
+	// Determine binary directory for start.sh
+	binDir, _ := os.Getwd()
+	if exe, err := os.Executable(); err == nil {
+		binDir = filepath.Dir(exe)
+	}
+
 	// Start WebUI
-	handler := web.NewHandler(s, eng, warpClient)
+	handler := web.NewHandler(s, eng, warpClient, version, binDir)
 	srv := web.NewServer(settings.WebAddr, settings.WebUser, settings.WebPass, handler)
 
 	go func() {

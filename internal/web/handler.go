@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lieyan/warp-proxies/internal/engine"
@@ -19,10 +22,12 @@ type Handler struct {
 	store      *store.Store
 	engine     *engine.Engine
 	warpClient *warp.Client
+	version    string
+	binDir     string
 }
 
-func NewHandler(s *store.Store, e *engine.Engine, w *warp.Client) *Handler {
-	return &Handler{store: s, engine: e, warpClient: w}
+func NewHandler(s *store.Store, e *engine.Engine, w *warp.Client, version, binDir string) *Handler {
+	return &Handler{store: s, engine: e, warpClient: w, version: version, binDir: binDir}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -353,4 +358,27 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("switched rotation mode", "mode", mode)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "switched", "mode": mode})
+}
+
+func (h *Handler) GetVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"version": h.version})
+}
+
+func (h *Handler) TriggerUpdate(w http.ResponseWriter, r *http.Request) {
+	script := filepath.Join(h.binDir, "start.sh")
+
+	cmd := exec.Command("bash", script)
+	cmd.Dir = h.binDir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		slog.Error("trigger update failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to start update: "+err.Error())
+		return
+	}
+
+	go cmd.Wait()
+
+	slog.Info("update triggered", "pid", cmd.Process.Pid)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updating"})
 }

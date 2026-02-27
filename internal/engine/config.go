@@ -12,7 +12,14 @@ import (
 	"github.com/sagernet/sing/common/json/badoption"
 )
 
+// ErrNoAccounts is returned by BuildOptions when there are no enabled accounts.
+var ErrNoAccounts = fmt.Errorf("no enabled accounts")
+
 func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Options, error) {
+	if len(accounts) == 0 {
+		return nil, ErrNoAccounts
+	}
+
 	proxyHost := settings.ProxyHost
 	if proxyHost == "" {
 		proxyHost = "127.0.0.1"
@@ -55,13 +62,6 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 
 	// Outbounds
 	var outbounds []option.Outbound
-
-	// Direct outbound
-	outbounds = append(outbounds, option.Outbound{
-		Type:    C.TypeDirect,
-		Tag:     "direct",
-		Options: &option.DirectOutboundOptions{},
-	})
 
 	// WireGuard outbounds for each enabled account
 	var wgTags []string
@@ -117,51 +117,38 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 	}
 
 	// URLTest group
-	if len(wgTags) > 0 {
-		urltestOpts := &option.URLTestOutboundOptions{
-			Outbounds:                 wgTags,
-			URL:                       settings.URLTestURL,
-			Interval:                  badoption.Duration(time.Duration(settings.URLTestInterval) * time.Second),
-			Tolerance:                 settings.URLTestTolerance,
-			InterruptExistConnections: true,
-		}
-		outbounds = append(outbounds, option.Outbound{
-			Type:    C.TypeURLTest,
-			Tag:     "auto",
-			Options: urltestOpts,
-		})
-
-		// Selector group: includes "auto" + all individual WG tags
-		selectorTags := []string{"auto"}
-		selectorTags = append(selectorTags, wgTags...)
-
-		defaultTag := "auto"
-		if settings.RotationMode == "random" {
-			defaultTag = wgTags[0]
-		}
-
-		selectorOpts := &option.SelectorOutboundOptions{
-			Outbounds:                 selectorTags,
-			Default:                   defaultTag,
-			InterruptExistConnections: true,
-		}
-		outbounds = append(outbounds, option.Outbound{
-			Type:    C.TypeSelector,
-			Tag:     "proxy",
-			Options: selectorOpts,
-		})
-	} else {
-		// No accounts: selector with direct
-		outbounds = append(outbounds, option.Outbound{
-			Type: C.TypeSelector,
-			Tag:  "proxy",
-			Options: &option.SelectorOutboundOptions{
-				Outbounds:                 []string{"direct"},
-				Default:                   "direct",
-				InterruptExistConnections: true,
-			},
-		})
+	urltestOpts := &option.URLTestOutboundOptions{
+		Outbounds:                 wgTags,
+		URL:                       settings.URLTestURL,
+		Interval:                  badoption.Duration(time.Duration(settings.URLTestInterval) * time.Second),
+		Tolerance:                 settings.URLTestTolerance,
+		InterruptExistConnections: true,
 	}
+	outbounds = append(outbounds, option.Outbound{
+		Type:    C.TypeURLTest,
+		Tag:     "auto",
+		Options: urltestOpts,
+	})
+
+	// Selector group: includes "auto" + all individual WG tags
+	selectorTags := []string{"auto"}
+	selectorTags = append(selectorTags, wgTags...)
+
+	defaultTag := "auto"
+	if settings.RotationMode == "random" {
+		defaultTag = wgTags[0]
+	}
+
+	selectorOpts := &option.SelectorOutboundOptions{
+		Outbounds:                 selectorTags,
+		Default:                   defaultTag,
+		InterruptExistConnections: true,
+	}
+	outbounds = append(outbounds, option.Outbound{
+		Type:    C.TypeSelector,
+		Tag:     "proxy",
+		Options: selectorOpts,
+	})
 
 	// DNS configuration:
 	// Two DNS servers with different purposes:
@@ -181,11 +168,6 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 					Options: &option.RemoteHTTPSDNSServerOptions{
 						RemoteTLSDNSServerOptions: option.RemoteTLSDNSServerOptions{
 							RemoteDNSServerOptions: option.RemoteDNSServerOptions{
-								LocalDNSServerOptions: option.LocalDNSServerOptions{
-									DialerOptions: option.DialerOptions{
-										Detour: "direct",
-									},
-								},
 								DNSServerAddressOptions: option.DNSServerAddressOptions{
 									Server: "1.1.1.1",
 								},

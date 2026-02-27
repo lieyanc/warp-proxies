@@ -40,6 +40,8 @@ func (s *Server) ListenAndServe() error {
 	mux.HandleFunc("PUT /api/settings", s.handler.UpdateSettings)
 	mux.HandleFunc("POST /api/engine/restart", s.handler.RestartEngine)
 	mux.HandleFunc("POST /api/engine/mode", s.handler.SwitchMode)
+	mux.HandleFunc("GET /api/version", s.handler.GetVersion)
+	mux.HandleFunc("POST /api/update", s.handler.TriggerUpdate)
 
 	// Static files
 	staticContent, _ := fs.Sub(staticFS, "static")

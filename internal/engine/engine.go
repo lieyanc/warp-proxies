@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -34,6 +35,10 @@ func (e *Engine) Start() error {
 func (e *Engine) startLocked() error {
 	opts, err := e.buildOpts()
 	if err != nil {
+		if errors.Is(err, ErrNoAccounts) {
+			slog.Info("no enabled accounts, engine idle")
+			return nil
+		}
 		return fmt.Errorf("build options: %w", err)
 	}
 
