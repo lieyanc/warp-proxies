@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -25,6 +26,7 @@ func NewHandler(s *store.Store, e *engine.Engine, w *warp.Client) *Handler {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
 }
@@ -38,10 +40,10 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	settings := h.store.GetSettings()
 
 	status := map[string]any{
-		"running":        h.engine.IsRunning(),
-		"mode":           settings.RotationMode,
-		"account_count":  len(accounts),
-		"current":        "",
+		"running":       h.engine.IsRunning(),
+		"mode":          settings.RotationMode,
+		"account_count": len(accounts),
+		"current":       "",
 	}
 
 	b := h.engine.Box()
@@ -54,7 +56,6 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) GetAccounts(w http.ResponseWriter, r *http.Request) {
 	accounts := h.store.GetAccounts()
-	// Redact sensitive fields
 	type safeAccount struct {
 		ID            string    `json:"id"`
 		Name          string    `json:"name"`
@@ -116,12 +117,7 @@ func (h *Handler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("registered WARP account", "name", account.Name, "id", account.ID)
 
-	// Restart engine to pick up new account
-	go func() {
-		if err := h.engine.Restart(); err != nil {
-			slog.Error("restart engine after add", "err", err)
-		}
-	}()
+	go h.engine.Restart()
 
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":   account.ID,
@@ -174,18 +170,12 @@ func (h *Handler) BatchCreateAccounts(w http.ResponseWriter, r *http.Request) {
 
 		slog.Info("batch registered WARP account", "name", account.Name, "id", account.ID)
 
-		// Sleep between registrations to avoid rate limiting
 		if i < req.Count-1 {
 			time.Sleep(2 * time.Second)
 		}
 	}
 
-	// Restart engine
-	go func() {
-		if err := h.engine.Restart(); err != nil {
-			slog.Error("restart engine after batch add", "err", err)
-		}
-	}()
+	go h.engine.Restart()
 
 	writeJSON(w, http.StatusCreated, results)
 }
@@ -214,12 +204,7 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Restart engine
-	go func() {
-		if err := h.engine.Restart(); err != nil {
-			slog.Error("restart engine after delete", "err", err)
-		}
-	}()
+	go h.engine.Restart()
 
 	slog.Info("deleted WARP account", "name", account.Name, "id", account.ID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -263,16 +248,16 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrAccountNotFound) {
+			writeError(w, http.StatusNotFound, "account not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "update account: "+err.Error())
 		return
 	}
 
 	if needRestart {
-		go func() {
-			if err := h.engine.Restart(); err != nil {
-				slog.Error("restart engine after update", "err", err)
-			}
-		}()
+		go h.engine.Restart()
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
@@ -294,22 +279,13 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Restart engine to apply new settings
-	go func() {
-		if err := h.engine.Restart(); err != nil {
-			slog.Error("restart engine after settings update", "err", err)
-		}
-	}()
+	go h.engine.Restart()
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 func (h *Handler) RestartEngine(w http.ResponseWriter, r *http.Request) {
-	go func() {
-		if err := h.engine.Restart(); err != nil {
-			slog.Error("manual engine restart", "err", err)
-		}
-	}()
+	go h.engine.Restart()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
 }
 
@@ -341,16 +317,19 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 		wgTags = append(wgTags, fmt.Sprintf("wg-%s", a.Name))
 	}
 
-	var outboundMgr adapter.OutboundManager = b.Outbound()
-	if !engine.SwitchMode(outboundMgr, mode, wgTags) {
-		writeError(w, http.StatusInternalServerError, "failed to switch mode")
+	if len(wgTags) == 0 {
+		writeError(w, http.StatusBadRequest, "no enabled accounts")
 		return
 	}
 
-	// Update settings
+	engine.SwitchMode(b.Outbound(), mode, wgTags)
+
+	// Persist mode change
 	settings := h.store.GetSettings()
 	settings.RotationMode = mode
-	h.store.SetSettings(settings)
+	if err := h.store.SetSettings(settings); err != nil {
+		slog.Error("persist mode switch", "err", err)
+	}
 
 	// Update rotator
 	if mode == "random" {

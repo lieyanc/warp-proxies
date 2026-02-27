@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lieyan/warp-proxies/internal/store"
@@ -30,7 +31,6 @@ func NewClient() *Client {
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
 					MinVersion: tls.VersionTLS12,
-					MaxVersion: tls.VersionTLS12,
 				},
 			},
 		},
@@ -111,8 +111,8 @@ func (c *Client) Register(name string, endpoint string, endpointPort uint16) (*s
 		PeerPublicKey: peerPubKey,
 		Endpoint:      endpoint,
 		EndpointPort:  endpointPort,
-		IPv4:          regResp.Config.Interface.Addresses.V4,
-		IPv6:          regResp.Config.Interface.Addresses.V6,
+		IPv4:          ensureCIDR(regResp.Config.Interface.Addresses.V4, "/32"),
+		IPv6:          ensureCIDR(regResp.Config.Interface.Addresses.V6, "/128"),
 		Reserved:      reserved,
 		Token:         regResp.Token,
 		Enabled:       true,
@@ -154,4 +154,15 @@ func decodeClientID(clientID string) ([]uint8, error) {
 		return nil, fmt.Errorf("client_id too short: %d bytes", len(decoded))
 	}
 	return []uint8{decoded[0], decoded[1], decoded[2]}, nil
+}
+
+// ensureCIDR appends the default suffix if addr has no '/' prefix length.
+func ensureCIDR(addr, defaultSuffix string) string {
+	if addr == "" {
+		return ""
+	}
+	if !strings.Contains(addr, "/") {
+		return addr + defaultSuffix
+	}
+	return addr
 }

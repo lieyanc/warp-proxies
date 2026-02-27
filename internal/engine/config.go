@@ -12,7 +12,7 @@ import (
 	"github.com/sagernet/sing/common/json/badoption"
 )
 
-func BuildOptions(accounts []store.Account, settings store.Settings, socksPort, httpPort uint16, socksUser, socksPass string) (*option.Options, error) {
+func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Options, error) {
 	listenAddr := badoption.Addr(netip.MustParseAddr("0.0.0.0"))
 
 	var inbounds []option.Inbound
@@ -21,11 +21,11 @@ func BuildOptions(accounts []store.Account, settings store.Settings, socksPort, 
 	socksOpts := &option.SocksInboundOptions{
 		ListenOptions: option.ListenOptions{
 			Listen:     &listenAddr,
-			ListenPort: socksPort,
+			ListenPort: settings.SocksPort,
 		},
 	}
-	if socksUser != "" {
-		socksOpts.Users = []auth.User{{Username: socksUser, Password: socksPass}}
+	if settings.ProxyUser != "" {
+		socksOpts.Users = []auth.User{{Username: settings.ProxyUser, Password: settings.ProxyPass}}
 	}
 	inbounds = append(inbounds, option.Inbound{
 		Type:    C.TypeSOCKS,
@@ -37,11 +37,11 @@ func BuildOptions(accounts []store.Account, settings store.Settings, socksPort, 
 	httpOpts := &option.HTTPMixedInboundOptions{
 		ListenOptions: option.ListenOptions{
 			Listen:     &listenAddr,
-			ListenPort: httpPort,
+			ListenPort: settings.HTTPPort,
 		},
 	}
-	if socksUser != "" {
-		httpOpts.Users = []auth.User{{Username: socksUser, Password: socksPass}}
+	if settings.ProxyUser != "" {
+		httpOpts.Users = []auth.User{{Username: settings.ProxyUser, Password: settings.ProxyPass}}
 	}
 	inbounds = append(inbounds, option.Inbound{
 		Type:    C.TypeMixed,
@@ -61,8 +61,14 @@ func BuildOptions(accounts []store.Account, settings store.Settings, socksPort, 
 
 	// WireGuard outbounds for each enabled account
 	var wgTags []string
+	tagCount := make(map[string]int)
 	for _, acc := range accounts {
-		tag := fmt.Sprintf("wg-%s", acc.Name)
+		baseTag := fmt.Sprintf("wg-%s", acc.Name)
+		tagCount[baseTag]++
+		tag := baseTag
+		if tagCount[baseTag] > 1 {
+			tag = fmt.Sprintf("%s-%d", baseTag, tagCount[baseTag])
+		}
 		wgTags = append(wgTags, tag)
 
 		ipv4, err := netip.ParsePrefix(acc.IPv4)
@@ -80,6 +86,15 @@ func BuildOptions(accounts []store.Account, settings store.Settings, socksPort, 
 		}
 
 		wgOpts := &option.LegacyWireGuardOutboundOptions{
+			DialerOptions: option.DialerOptions{
+				// Use the direct DoH DNS server for resolving the WireGuard
+				// endpoint hostname. This avoids issues where a local proxy
+				// tool intercepts DNS and returns fake IPs (e.g. 198.18.x.x),
+				// which would prevent the WireGuard tunnel from connecting.
+				DomainResolver: &option.DomainResolveOptions{
+					Server: "dns-direct",
+				},
+			},
 			ServerOptions: option.ServerOptions{
 				Server:     acc.Endpoint,
 				ServerPort: acc.EndpointPort,
@@ -146,17 +161,30 @@ func BuildOptions(accounts []store.Account, settings store.Settings, socksPort, 
 		})
 	}
 
-	// DNS — use local system resolver, no detour needed
+	// DNS configuration:
+	// - "dns-direct": DNS-over-HTTPS via Cloudflare (1.1.1.1) used as the
+	//   default resolver for all traffic. This avoids issues where a local
+	//   proxy tool intercepts DNS queries and returns fake IPs (e.g.
+	//   198.18.x.x), which would cause proxied traffic to connect to
+	//   non-routable addresses inside the WireGuard tunnel.
 	dnsOpts := &option.DNSOptions{
 		RawDNSOptions: option.RawDNSOptions{
 			Servers: []option.DNSServerOptions{
 				{
-					Type:    "local",
-					Tag:     "dns-local",
-					Options: &option.LocalDNSServerOptions{},
+					Type: C.DNSTypeHTTPS,
+					Tag:  "dns-direct",
+					Options: &option.RemoteHTTPSDNSServerOptions{
+						RemoteTLSDNSServerOptions: option.RemoteTLSDNSServerOptions{
+							RemoteDNSServerOptions: option.RemoteDNSServerOptions{
+								DNSServerAddressOptions: option.DNSServerAddressOptions{
+									Server: "1.1.1.1",
+								},
+							},
+						},
+					},
 				},
 			},
-			Final: "dns-local",
+			Final: "dns-direct",
 		},
 	}
 

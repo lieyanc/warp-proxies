@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"strings"
 )
 
 //go:embed static
@@ -89,10 +88,6 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusNoContent)
 			return
-		}
-		// Set JSON content type for API routes
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			w.Header().Set("Content-Type", "application/json")
 		}
 		next.ServeHTTP(w, r)
 	})

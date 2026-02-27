@@ -79,13 +79,15 @@ func (e *Engine) stopLocked() error {
 	return nil
 }
 
-func (e *Engine) Restart() error {
+func (e *Engine) Restart() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err := e.stopLocked(); err != nil {
 		slog.Warn("error stopping engine", "err", err)
 	}
-	return e.startLocked()
+	if err := e.startLocked(); err != nil {
+		slog.Error("error starting engine", "err", err)
+	}
 }
 
 func (e *Engine) IsRunning() bool {

@@ -2,10 +2,13 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 )
+
+var ErrAccountNotFound = errors.New("account not found")
 
 type Store struct {
 	mu       sync.RWMutex
@@ -29,17 +32,26 @@ func New(dir string) (*Store, error) {
 }
 
 func (s *Store) load() error {
+	// Load accounts
 	accPath := filepath.Join(s.dir, "accounts.json")
 	if data, err := os.ReadFile(accPath); err == nil {
 		if err := json.Unmarshal(data, &s.accounts); err != nil {
 			return err
 		}
 	}
+
+	// Load settings — auto-create with defaults if missing
 	setPath := filepath.Join(s.dir, "settings.json")
-	if data, err := os.ReadFile(setPath); err == nil {
-		if err := json.Unmarshal(data, &s.settings); err != nil {
-			return err
+	data, err := os.ReadFile(setPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// First launch: write default settings
+			return s.saveSettings()
 		}
+		return err
+	}
+	if err := json.Unmarshal(data, &s.settings); err != nil {
+		return err
 	}
 	return nil
 }
@@ -109,7 +121,7 @@ func (s *Store) UpdateAccount(id string, fn func(*Account)) error {
 			return s.saveAccounts()
 		}
 	}
-	return nil
+	return ErrAccountNotFound
 }
 
 func (s *Store) GetSettings() Settings {

@@ -19,23 +19,44 @@ type Account struct {
 }
 
 type Settings struct {
-	RotationMode    string `json:"rotation_mode"`
-	URLTestURL      string `json:"urltest_url"`
-	URLTestInterval int    `json:"urltest_interval"`
+	// Proxy ports
+	SocksPort uint16 `json:"socks_port"`
+	HTTPPort  uint16 `json:"http_port"`
+
+	// Proxy auth
+	ProxyUser string `json:"proxy_user"`
+	ProxyPass string `json:"proxy_pass"`
+
+	// WebUI
+	WebAddr string `json:"web_addr"`
+	WebUser string `json:"web_user"`
+	WebPass string `json:"web_pass"`
+
+	// Rotation
+	RotationMode     string `json:"rotation_mode"`
+	URLTestURL       string `json:"urltest_url"`
+	URLTestInterval  int    `json:"urltest_interval"`
 	URLTestTolerance uint16 `json:"urltest_tolerance"`
-	RandomInterval  int    `json:"random_interval"`
-	ClashAPIPort    uint16 `json:"clash_api_port"`
-	ClashAPISecret  string `json:"clash_api_secret"`
+	RandomInterval   int    `json:"random_interval"`
+
+	// Clash API
+	ClashAPIPort   uint16 `json:"clash_api_port"`
+	ClashAPISecret string `json:"clash_api_secret"`
 }
 
 func DefaultSettings() Settings {
 	return Settings{
-		RotationMode:    "urltest",
-		URLTestURL:      "https://www.gstatic.com/generate_204",
-		URLTestInterval: 300,
+		SocksPort:        1080,
+		HTTPPort:         8080,
+		WebAddr:          ":9090",
+		WebUser:          "admin",
+		WebPass:          "admin",
+		RotationMode:     "urltest",
+		URLTestURL:       "https://www.gstatic.com/generate_204",
+		URLTestInterval:  300,
 		URLTestTolerance: 50,
-		RandomInterval:  30,
-		ClashAPIPort:    9097,
-		ClashAPISecret:  "",
+		RandomInterval:   30,
+		ClashAPIPort:     9097,
+		ClashAPISecret:   "",
 	}
 }
