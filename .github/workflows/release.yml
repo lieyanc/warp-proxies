@@ -64,6 +64,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Determine dev version
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        id: dev
+        run: |
+          BUILD=$(printf '%04d' "${{ github.run_number }}")
+          DATE=$(date -u +%Y%m%d)
+          SHA=${GITHUB_SHA::7}
+          echo "version=dev-${BUILD}-${DATE}-${SHA}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -81,10 +90,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dev
-          name: "Dev Build (${GITHUB_SHA::7})"
+          name: "Dev Build (${{ steps.dev.outputs.version }})"
           body: |
             Automated pre-release from `master` branch.
 
+            Version: `${{ steps.dev.outputs.version }}`
             Commit: ${{ github.sha }}
           files: artifacts/*
           prerelease: true
