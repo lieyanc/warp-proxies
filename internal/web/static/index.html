@@ -107,6 +107,27 @@ input::placeholder{color:var(--text3)}
 .setting-grid label{font-size:12px;color:var(--text2);align-self:center;font-weight:500}
 .setting-grid input,.setting-grid select{width:100%}
 
+/* Login screen */
+#loginScreen{position:fixed;inset:0;background:var(--bg);z-index:300;display:flex;align-items:center;justify-content:center}
+#loginScreen.hidden{display:none}
+.login-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:32px;width:90%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.login-card h2{font-size:22px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:10px}
+.login-card h2 span{color:var(--accent);background:var(--accent-bg);padding:2px 10px;border-radius:6px;font-size:18px;letter-spacing:.5px}
+.login-card p{color:var(--text2);font-size:13px;margin-bottom:24px}
+.login-card input{width:100%;margin-bottom:12px;padding:10px 14px}
+.login-card button{width:100%;padding:10px;margin-top:4px}
+.login-error{color:var(--red);font-size:12px;margin-bottom:10px;display:none}
+
+/* Header bar */
+.header-right{display:flex;align-items:center;gap:12px}
+.refresh-bar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2)}
+.refresh-bar select{padding:4px 8px;font-size:12px;border-radius:6px}
+.refresh-bar .last-updated{color:var(--text3);font-size:11px}
+.btn-icon{padding:5px 10px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text2);cursor:pointer;transition:var(--transition)}
+.btn-icon:hover{border-color:var(--accent-border);color:var(--accent)}
+.btn-logout{color:var(--red);border-color:rgba(244,63,94,.2)}
+.btn-logout:hover{background:var(--red);border-color:var(--red);color:#fff}
+
 /* Responsive */
 @media(max-width:640px){
   .stats{grid-template-columns:1fr 1fr}
@@ -114,6 +135,8 @@ input::placeholder{color:var(--text3)}
   .controls{gap:6px}
   .container{padding:14px}
   header h1{font-size:18px}
+  .header-right{flex-wrap:wrap;gap:8px}
+  .refresh-bar{flex-wrap:wrap}
 }
 @media(max-width:400px){
   .stats{grid-template-columns:1fr}
@@ -121,10 +144,35 @@ input::placeholder{color:var(--text3)}
 </style>
 </head>
 <body>
-<div class="container">
+<div id="loginScreen">
+  <div class="login-card">
+    <h2><span>WARP</span> Proxies</h2>
+    <p>Sign in to access the dashboard</p>
+    <div class="login-error" id="loginError">Invalid username or password</div>
+    <input id="loginUser" placeholder="Username" autocomplete="username" autofocus>
+    <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password">
+    <button class="primary" id="loginBtn" onclick="login()">Sign In</button>
+  </div>
+</div>
+
+<div class="container" id="dashboard" style="display:none">
   <header>
     <h1><span>WARP</span> Proxies <span class="version" id="versionText"></span></h1>
-    <div id="statusBadge" class="badge badge-red">Stopped</div>
+    <div class="header-right">
+      <div class="refresh-bar">
+        <select id="refreshInterval" onchange="setRefreshInterval(this.value)">
+          <option value="5">5s</option>
+          <option value="10">10s</option>
+          <option value="30">30s</option>
+          <option value="60">60s</option>
+          <option value="0">Off</option>
+        </select>
+        <button class="btn-icon" onclick="refresh()" title="Refresh now">&#x21bb;</button>
+        <span class="last-updated" id="lastUpdated"></span>
+      </div>
+      <div id="statusBadge" class="badge badge-red">Stopped</div>
+      <button class="btn-icon btn-logout" onclick="logout()" title="Logout">Logout</button>
+    </div>
   </header>
 
   <div class="card">
@@ -142,6 +190,7 @@ input::placeholder{color:var(--text3)}
       <div class="mode-toggle">
         <button id="btnUrltest" onclick="switchMode('urltest')">URLTest</button>
         <button id="btnRandom" onclick="switchMode('random')">Random</button>
+        <button id="btnRoundrobin" onclick="switchMode('roundrobin')">RoundRobin</button>
       </div>
       <button class="primary" onclick="showAddModal()">+ Add Account</button>
       <button onclick="showBatchModal()">+ Batch Add</button>
@@ -224,17 +273,107 @@ input::placeholder{color:var(--text3)}
 
 <script>
 const API = '';
+let refreshTimer = null;
+
+// Auth helpers
+function getAuth() { return localStorage.getItem('warp_auth'); }
+function setAuth(user, pass) { localStorage.setItem('warp_auth', btoa(user + ':' + pass)); }
+function clearAuth() { localStorage.removeItem('warp_auth'); }
 
 async function api(path, opts = {}) {
-  const res = await fetch(API + path, {
-    ...opts,
-    headers: { 'Content-Type': 'application/json', ...opts.headers },
-  });
+  const headers = { 'Content-Type': 'application/json', ...opts.headers };
+  const auth = getAuth();
+  if (auth) headers['Authorization'] = 'Basic ' + auth;
+  const res = await fetch(API + path, { ...opts, headers });
+  if (res.status === 401) {
+    clearAuth();
+    showLogin();
+    throw new Error('unauthorized');
+  }
   if (!res.ok && res.status !== 201) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || res.statusText);
   }
   return res.json();
+}
+
+function showLogin() {
+  document.getElementById('loginScreen').classList.remove('hidden');
+  document.getElementById('dashboard').style.display = 'none';
+  stopRefresh();
+}
+
+function showDashboard() {
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('dashboard').style.display = '';
+  loadVersion();
+  refresh();
+  const saved = localStorage.getItem('warp_refresh') || '5';
+  document.getElementById('refreshInterval').value = saved;
+  setRefreshInterval(saved);
+}
+
+async function checkAuth() {
+  if (!getAuth()) { showLogin(); return; }
+  try {
+    await api('/api/status');
+    showDashboard();
+  } catch {
+    showLogin();
+  }
+}
+
+async function login() {
+  const user = document.getElementById('loginUser').value;
+  const pass = document.getElementById('loginPass').value;
+  const errEl = document.getElementById('loginError');
+  const btn = document.getElementById('loginBtn');
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+  try {
+    setAuth(user, pass);
+    await api('/api/login', { method: 'POST' });
+    showDashboard();
+  } catch {
+    clearAuth();
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+  }
+}
+
+function logout() {
+  clearAuth();
+  showLogin();
+}
+
+// Enter key on login form
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !document.getElementById('loginScreen').classList.contains('hidden')) {
+    login();
+  }
+});
+
+// Refresh interval management
+function setRefreshInterval(seconds) {
+  localStorage.setItem('warp_refresh', seconds);
+  stopRefresh();
+  const s = parseInt(seconds);
+  if (s > 0) {
+    refreshTimer = setInterval(refresh, s * 1000);
+  }
+}
+
+function stopRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
+
+function updateLastUpdated() {
+  const now = new Date();
+  const ts = now.toLocaleTimeString();
+  document.getElementById('lastUpdated').textContent = ts;
 }
 
 function toast(msg, type = 'success') {
@@ -271,6 +410,7 @@ async function refresh() {
 
     document.getElementById('btnUrltest').classList.toggle('active', status.mode === 'urltest');
     document.getElementById('btnRandom').classList.toggle('active', status.mode === 'random');
+    document.getElementById('btnRoundrobin').classList.toggle('active', status.mode === 'roundrobin');
 
     const tbody = document.getElementById('accountsTable');
     tbody.innerHTML = accounts.map(a => `
@@ -286,8 +426,10 @@ async function refresh() {
         </td>
       </tr>
     `).join('');
+
+    updateLastUpdated();
   } catch (e) {
-    console.error('refresh error:', e);
+    if (e.message !== 'unauthorized') console.error('refresh error:', e);
   }
 }
 
@@ -298,7 +440,7 @@ async function switchMode(mode) {
     await api('/api/engine/mode', { method: 'POST', body: JSON.stringify({ mode }) });
     toast(`Switched to ${mode} mode`);
     refresh();
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
 async function restartEngine() {
@@ -306,7 +448,7 @@ async function restartEngine() {
     await api('/api/engine/restart', { method: 'POST' });
     toast('Engine restarting...');
     setTimeout(refresh, 1000);
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
 function showAddModal() { document.getElementById('addModal').classList.add('show'); }
@@ -323,7 +465,7 @@ async function showSettingsModal() {
     document.getElementById('setClashPort').value = s.clash_api_port;
     document.getElementById('setClashSecret').value = s.clash_api_secret;
     document.getElementById('settingsModal').classList.add('show');
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
 async function createAccount() {
@@ -337,7 +479,7 @@ async function createAccount() {
     toast('Account registered');
     closeModals();
     setTimeout(refresh, 1500);
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
 async function batchCreate() {
@@ -352,7 +494,7 @@ async function batchCreate() {
     await api('/api/accounts/batch', { method: 'POST', body: JSON.stringify(body) });
     toast('Batch registration complete');
     setTimeout(refresh, 1500);
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
 async function deleteAccount(id, name) {
@@ -361,7 +503,7 @@ async function deleteAccount(id, name) {
     await api(`/api/accounts/${id}`, { method: 'DELETE' });
     toast('Account deleted');
     setTimeout(refresh, 1500);
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
 async function toggleAccount(id, enabled) {
@@ -369,7 +511,7 @@ async function toggleAccount(id, enabled) {
     await api(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
     toast(enabled ? 'Account enabled' : 'Account disabled');
     setTimeout(refresh, 1500);
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
 function editEndpoint(id, ep, port) {
@@ -390,14 +532,14 @@ async function saveEndpoint() {
     toast('Endpoint updated');
     closeModals();
     setTimeout(refresh, 1500);
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
 async function saveSettings() {
   try {
     const body = {
       proxy_host: document.getElementById('setProxyHost').value,
-      rotation_mode: document.getElementById('btnRandom').classList.contains('active') ? 'random' : 'urltest',
+      rotation_mode: document.getElementById('btnRoundrobin').classList.contains('active') ? 'roundrobin' : document.getElementById('btnRandom').classList.contains('active') ? 'random' : 'urltest',
       urltest_url: document.getElementById('setUrl').value,
       urltest_interval: parseInt(document.getElementById('setInterval').value),
       urltest_tolerance: parseInt(document.getElementById('setTolerance').value),
@@ -409,7 +551,7 @@ async function saveSettings() {
     toast('Settings saved');
     closeModals();
     setTimeout(refresh, 1500);
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
 async function triggerUpdate() {
@@ -424,7 +566,7 @@ async function triggerUpdate() {
       fetch('/api/version').then(r => { if (r.ok) location.reload(); else setTimeout(poll, 2000); }).catch(() => setTimeout(poll, 2000));
     }, 3000);
   } catch (e) {
-    toast(e.message, 'error');
+    if (e.message !== 'unauthorized') toast(e.message, 'error');
     const btn = document.getElementById('btnUpdate');
     btn.disabled = false;
     btn.textContent = 'Update';
@@ -438,9 +580,7 @@ async function loadVersion() {
   } catch (e) { /* ignore */ }
 }
 
-loadVersion();
-refresh();
-setInterval(refresh, 5000);
+checkAuth();
 </script>
 </body>
 </html>

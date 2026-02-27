@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -12,9 +13,10 @@ import (
 
 type Rotator struct {
 	mu       sync.Mutex
-	mode     string // "urltest" or "random"
+	mode     string // "urltest", "random", or "roundrobin"
 	interval time.Duration
 	tags     []string
+	index    atomic.Int64
 	getBox   func() adapter.OutboundManager
 	stopCh   chan struct{}
 	stopped  bool
@@ -31,7 +33,7 @@ func NewRotator(mode string, interval time.Duration, tags []string, getBox func(
 }
 
 func (r *Rotator) Start() {
-	if r.mode != "random" || len(r.tags) == 0 {
+	if (r.mode != "random" && r.mode != "roundrobin") || len(r.tags) == 0 {
 		return
 	}
 	go r.run()
@@ -68,9 +70,19 @@ func (r *Rotator) rotate() {
 		return
 	}
 
-	tag := r.tags[rand.IntN(len(r.tags))]
+	var tag string
+	switch r.mode {
+	case "random":
+		tag = r.tags[rand.IntN(len(r.tags))]
+	case "roundrobin":
+		idx := r.index.Add(1) - 1
+		tag = r.tags[int(idx)%len(r.tags)]
+	default:
+		return
+	}
+
 	if selector.SelectOutbound(tag) {
-		slog.Info("rotated to outbound", "tag", tag)
+		slog.Info("rotated to outbound", "mode", r.mode, "tag", tag)
 	}
 }
 
@@ -90,8 +102,8 @@ func (r *Rotator) Mode() string {
 }
 
 // SwitchMode switches the rotation mode at runtime.
-// For "urltest": select "auto" in the selector
-// For "random": select a random individual tag
+// For "urltest": select "auto" in the selector.
+// For "random"/"roundrobin": select an individual wg tag.
 func SwitchMode(outboundMgr adapter.OutboundManager, mode string, wgTags []string) bool {
 	proxyOut, ok := outboundMgr.Outbound("proxy")
 	if !ok {
@@ -110,8 +122,12 @@ func SwitchMode(outboundMgr adapter.OutboundManager, mode string, wgTags []strin
 		if len(wgTags) == 0 {
 			return false
 		}
-		tag := wgTags[rand.IntN(len(wgTags))]
-		return selector.SelectOutbound(tag)
+		return selector.SelectOutbound(wgTags[rand.IntN(len(wgTags))])
+	case "roundrobin":
+		if len(wgTags) == 0 {
+			return false
+		}
+		return selector.SelectOutbound(wgTags[0])
 	}
 	return false
 }
@@ -125,4 +141,9 @@ func GetCurrentOutbound(outboundMgr adapter.OutboundManager) string {
 		return grp.Now()
 	}
 	return proxyOut.Tag()
+}
+
+// IsRotatingMode returns true if the mode needs a Rotator goroutine.
+func IsRotatingMode(mode string) bool {
+	return mode == "random" || mode == "roundrobin"
 }

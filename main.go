@@ -62,8 +62,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start rotator if random mode and engine is running
-	if settings.RotationMode == "random" && eng.IsRunning() {
+	// Start rotator if needed and engine is running
+	if engine.IsRotatingMode(settings.RotationMode) && eng.IsRunning() {
 		startRotator(eng, s)
 	}
 
@@ -108,7 +108,7 @@ func startRotator(eng *engine.Engine, s *store.Store) {
 		wgTags = append(wgTags, fmt.Sprintf("wg-%s", a.Name))
 	}
 	rotator := engine.NewRotator(
-		"random",
+		settings.RotationMode,
 		time.Duration(settings.RandomInterval)*time.Second,
 		wgTags,
 		func() adapter.OutboundManager {

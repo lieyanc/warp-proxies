@@ -40,6 +40,10 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	accounts := h.store.GetEnabledAccounts()
 	settings := h.store.GetSettings()
@@ -304,8 +308,8 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mode := strings.ToLower(req.Mode)
-	if mode != "urltest" && mode != "random" {
-		writeError(w, http.StatusBadRequest, "mode must be 'urltest' or 'random'")
+	if mode != "urltest" && mode != "random" && mode != "roundrobin" {
+		writeError(w, http.StatusBadRequest, "mode must be 'urltest', 'random', or 'roundrobin'")
 		return
 	}
 
@@ -337,9 +341,9 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update rotator
-	if mode == "random" {
+	if engine.IsRotatingMode(mode) {
 		rotator := engine.NewRotator(
-			"random",
+			mode,
 			time.Duration(settings.RandomInterval)*time.Second,
 			wgTags,
 			func() adapter.OutboundManager {

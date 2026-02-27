@@ -29,32 +29,35 @@ func NewServer(addr, user, pass string, handler *Handler) *Server {
 func (s *Server) ListenAndServe() error {
 	mux := http.NewServeMux()
 
-	// API routes
-	mux.HandleFunc("GET /api/status", s.handler.GetStatus)
-	mux.HandleFunc("GET /api/accounts", s.handler.GetAccounts)
-	mux.HandleFunc("POST /api/accounts", s.handler.CreateAccount)
-	mux.HandleFunc("POST /api/accounts/batch", s.handler.BatchCreateAccounts)
-	mux.HandleFunc("DELETE /api/accounts/{id}", s.handler.DeleteAccount)
-	mux.HandleFunc("PATCH /api/accounts/{id}", s.handler.UpdateAccount)
-	mux.HandleFunc("GET /api/settings", s.handler.GetSettings)
-	mux.HandleFunc("PUT /api/settings", s.handler.UpdateSettings)
-	mux.HandleFunc("POST /api/engine/restart", s.handler.RestartEngine)
-	mux.HandleFunc("POST /api/engine/mode", s.handler.SwitchMode)
-	mux.HandleFunc("GET /api/version", s.handler.GetVersion)
-	mux.HandleFunc("POST /api/update", s.handler.TriggerUpdate)
+	// API routes (protected by auth)
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("POST /api/login", s.handler.Login)
+	apiMux.HandleFunc("GET /api/status", s.handler.GetStatus)
+	apiMux.HandleFunc("GET /api/accounts", s.handler.GetAccounts)
+	apiMux.HandleFunc("POST /api/accounts", s.handler.CreateAccount)
+	apiMux.HandleFunc("POST /api/accounts/batch", s.handler.BatchCreateAccounts)
+	apiMux.HandleFunc("DELETE /api/accounts/{id}", s.handler.DeleteAccount)
+	apiMux.HandleFunc("PATCH /api/accounts/{id}", s.handler.UpdateAccount)
+	apiMux.HandleFunc("GET /api/settings", s.handler.GetSettings)
+	apiMux.HandleFunc("PUT /api/settings", s.handler.UpdateSettings)
+	apiMux.HandleFunc("POST /api/engine/restart", s.handler.RestartEngine)
+	apiMux.HandleFunc("POST /api/engine/mode", s.handler.SwitchMode)
+	apiMux.HandleFunc("GET /api/version", s.handler.GetVersion)
+	apiMux.HandleFunc("POST /api/update", s.handler.TriggerUpdate)
 
-	// Static files
+	if s.user != "" {
+		mux.Handle("/api/", s.basicAuth(apiMux))
+	} else {
+		mux.Handle("/api/", apiMux)
+	}
+
+	// Static files (no auth)
 	staticContent, _ := fs.Sub(staticFS, "static")
 	fileServer := http.FileServer(http.FS(staticContent))
 	mux.Handle("/", fileServer)
 
-	var handler http.Handler = mux
-	if s.user != "" {
-		handler = s.basicAuth(mux)
-	}
-
 	// CORS wrapper
-	handler = s.cors(handler)
+	handler := s.cors(mux)
 
 	slog.Info("WebUI server starting", "addr", s.addr)
 	return http.ListenAndServe(s.addr, handler)
@@ -70,8 +73,7 @@ func (s *Server) basicAuth(next http.Handler) http.Handler {
 
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != s.user || pass != s.pass {
-			w.Header().Set("WWW-Authenticate", `Basic realm="warp-proxies"`)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
 		next.ServeHTTP(w, r)
