@@ -87,12 +87,10 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 
 		wgOpts := &option.LegacyWireGuardOutboundOptions{
 			DialerOptions: option.DialerOptions{
-				// Use the direct DoH DNS server for resolving the WireGuard
-				// endpoint hostname. This avoids issues where a local proxy
-				// tool intercepts DNS and returns fake IPs (e.g. 198.18.x.x),
-				// which would prevent the WireGuard tunnel from connecting.
+				// Resolve WireGuard endpoint hostname via DoH (direct),
+				// bypassing any local fake-IP DNS interception.
 				DomainResolver: &option.DomainResolveOptions{
-					Server: "dns-direct",
+					Server: "dns-endpoint",
 				},
 			},
 			ServerOptions: option.ServerOptions{
@@ -162,20 +160,28 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 	}
 
 	// DNS configuration:
-	// - "dns-direct": DNS-over-HTTPS via Cloudflare (1.1.1.1) used as the
-	//   default resolver for all traffic. This avoids issues where a local
-	//   proxy tool intercepts DNS queries and returns fake IPs (e.g.
-	//   198.18.x.x), which would cause proxied traffic to connect to
-	//   non-routable addresses inside the WireGuard tunnel.
+	// Two DNS servers with different purposes:
+	// - "dns-endpoint": DoH via 1.1.1.1, direct outbound. Used ONLY by
+	//   WireGuard outbounds to resolve endpoint hostnames (e.g.
+	//   engage.cloudflareclient.com). Avoids fake-IP interception from
+	//   local proxy tools.
+	// - "dns-proxy": UDP 1.1.1.1, through "proxy" outbound. Default
+	//   resolver for proxied traffic — DNS queries go through the WARP
+	//   tunnel so DNS is not leaked to the local network.
 	dnsOpts := &option.DNSOptions{
 		RawDNSOptions: option.RawDNSOptions{
 			Servers: []option.DNSServerOptions{
 				{
 					Type: C.DNSTypeHTTPS,
-					Tag:  "dns-direct",
+					Tag:  "dns-endpoint",
 					Options: &option.RemoteHTTPSDNSServerOptions{
 						RemoteTLSDNSServerOptions: option.RemoteTLSDNSServerOptions{
 							RemoteDNSServerOptions: option.RemoteDNSServerOptions{
+								LocalDNSServerOptions: option.LocalDNSServerOptions{
+									DialerOptions: option.DialerOptions{
+										Detour: "direct",
+									},
+								},
 								DNSServerAddressOptions: option.DNSServerAddressOptions{
 									Server: "1.1.1.1",
 								},
@@ -183,8 +189,22 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 						},
 					},
 				},
+				{
+					Type: "udp",
+					Tag:  "dns-proxy",
+					Options: &option.RemoteDNSServerOptions{
+						LocalDNSServerOptions: option.LocalDNSServerOptions{
+							DialerOptions: option.DialerOptions{
+								Detour: "proxy",
+							},
+						},
+						DNSServerAddressOptions: option.DNSServerAddressOptions{
+							Server: "1.1.1.1",
+						},
+					},
+				},
 			},
-			Final: "dns-direct",
+			Final: "dns-proxy",
 		},
 	}
 
