@@ -278,7 +278,7 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
-	var settings store.Settings
+	settings := h.store.GetSettings()
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
