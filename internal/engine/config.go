@@ -13,7 +13,11 @@ import (
 )
 
 func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Options, error) {
-	listenAddr := badoption.Addr(netip.MustParseAddr("0.0.0.0"))
+	proxyHost := settings.ProxyHost
+	if proxyHost == "" {
+		proxyHost = "127.0.0.1"
+	}
+	listenAddr := badoption.Addr(netip.MustParseAddr(proxyHost))
 
 	var inbounds []option.Inbound
 
@@ -219,7 +223,7 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 	if settings.ClashAPIPort > 0 {
 		experimental = &option.ExperimentalOptions{
 			ClashAPI: &option.ClashAPIOptions{
-				ExternalController: fmt.Sprintf("0.0.0.0:%d", settings.ClashAPIPort),
+				ExternalController: fmt.Sprintf("127.0.0.1:%d", settings.ClashAPIPort),
 				Secret:             settings.ClashAPISecret,
 				DefaultMode:        "Rule",
 			},

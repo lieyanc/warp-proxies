@@ -19,7 +19,8 @@ type Account struct {
 }
 
 type Settings struct {
-	// Proxy ports
+	// Proxy listen
+	ProxyHost string `json:"proxy_host"`
 	SocksPort uint16 `json:"socks_port"`
 	HTTPPort  uint16 `json:"http_port"`
 
@@ -42,10 +43,14 @@ type Settings struct {
 	// Clash API
 	ClashAPIPort   uint16 `json:"clash_api_port"`
 	ClashAPISecret string `json:"clash_api_secret"`
+
+	// Update
+	UpdateChannel string `json:"update_channel"` // "dev" or "stable"
 }
 
 func DefaultSettings() Settings {
 	return Settings{
+		ProxyHost:        "127.0.0.1",
 		SocksPort:        1080,
 		HTTPPort:         8080,
 		WebAddr:          ":9090",
@@ -58,5 +63,6 @@ func DefaultSettings() Settings {
 		RandomInterval:   30,
 		ClashAPIPort:     9097,
 		ClashAPISecret:   "",
+		UpdateChannel:    "dev",
 	}
 }

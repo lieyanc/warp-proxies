@@ -77,8 +77,8 @@ func main() {
 	}()
 
 	slog.Info("proxy endpoints ready",
-		"socks", fmt.Sprintf(":%d", settings.SocksPort),
-		"http", fmt.Sprintf(":%d", settings.HTTPPort),
+		"socks", fmt.Sprintf("%s:%d", settings.ProxyHost, settings.SocksPort),
+		"http", fmt.Sprintf("%s:%d", settings.ProxyHost, settings.HTTPPort),
 		"webui", settings.WebAddr,
 	)
 

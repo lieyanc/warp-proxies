@@ -192,6 +192,7 @@ input::placeholder{color:var(--text3)}
   <div class="modal">
     <h3>Settings</h3>
     <div class="setting-grid">
+      <label>Proxy Host</label><input id="setProxyHost" placeholder="127.0.0.1">
       <label>URLTest URL</label><input id="setUrl">
       <label>URLTest Interval (s)</label><input id="setInterval" type="number">
       <label>URLTest Tolerance (ms)</label><input id="setTolerance" type="number">
@@ -312,6 +313,7 @@ function showBatchModal() { document.getElementById('batchModal').classList.add(
 async function showSettingsModal() {
   try {
     const s = await api('/api/settings');
+    document.getElementById('setProxyHost').value = s.proxy_host;
     document.getElementById('setUrl').value = s.urltest_url;
     document.getElementById('setInterval').value = s.urltest_interval;
     document.getElementById('setTolerance').value = s.urltest_tolerance;
@@ -392,6 +394,7 @@ async function saveEndpoint() {
 async function saveSettings() {
   try {
     const body = {
+      proxy_host: document.getElementById('setProxyHost').value,
       rotation_mode: document.getElementById('btnRandom').classList.contains('active') ? 'random' : 'urltest',
       urltest_url: document.getElementById('setUrl').value,
       urltest_interval: parseInt(document.getElementById('setInterval').value),
