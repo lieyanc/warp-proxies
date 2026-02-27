@@ -17,20 +17,42 @@
 
 ## 快速开始
 
-### 下载
+### 服务器一键部署（推荐）
+
+提供 `start.sh` 脚本，自动完成下载、更新和启动：
+
+
+```bash
+mkdir warp-proxies && cd warp-proxies
+curl -fsSL -o start.sh https://raw.githubusercontent.com/lieyanc/warp-proxies/master/start.sh
+chmod +x start.sh
+./start.sh
+```
+
+脚本会：
+
+1. 自动检测系统架构（amd64 / arm64）
+2. 首次运行时询问更新通道（`dev` 预发布 / `stable` 正式版）
+3. 从 GitHub Releases 下载对应二进制文件
+4. 停止旧进程，替换二进制，后台启动新进程
+5. 输出 WebUI 访问地址
+
+后续更新只需再次执行 `./start.sh`，脚本会自动完成热更新。
+
+### 手动下载
 
 从 [Releases](../../releases) 页面下载对应平台的预编译二进制文件：
 
 ```bash
 # Linux amd64
-wget -O warp-proxies https://github.com/lieyan/warp-proxies/releases/latest/download/warp-proxies-linux-amd64
+wget -O warp-proxies https://github.com/lieyanc/warp-proxies/releases/latest/download/warp-proxies-linux-amd64
 chmod +x warp-proxies
 ```
 
 ### 从源码构建
 
 ```bash
-git clone https://github.com/lieyan/warp-proxies.git
+git clone https://github.com/lieyanc/warp-proxies.git
 cd warp-proxies
 make build           # 当前平台
 make build-linux     # Linux amd64
