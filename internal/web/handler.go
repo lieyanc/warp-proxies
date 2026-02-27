@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os/exec"
@@ -366,6 +367,69 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) GetVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"version": h.version})
+}
+
+func (h *Handler) CheckUpdate(w http.ResponseWriter, r *http.Request) {
+	settings := h.store.GetSettings()
+	channel := settings.UpdateChannel
+	if channel == "" {
+		channel = "dev"
+	}
+
+	const repo = "lieyanc/warp-proxies"
+	var apiURL string
+	if channel == "stable" {
+		apiURL = "https://api.github.com/repos/" + repo + "/releases/latest"
+	} else {
+		apiURL = "https://api.github.com/repos/" + repo + "/releases/tags/dev"
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, _ := http.NewRequestWithContext(r.Context(), "GET", apiURL, nil)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := client.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to check update: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil || resp.StatusCode != 200 {
+		writeError(w, http.StatusBadGateway, "GitHub API error")
+		return
+	}
+
+	var release struct {
+		Name    string `json:"name"`
+		TagName string `json:"tag_name"`
+	}
+	if err := json.Unmarshal(body, &release); err != nil {
+		writeError(w, http.StatusBadGateway, "failed to parse release info")
+		return
+	}
+
+	var latest string
+	if channel == "stable" {
+		latest = release.TagName
+	} else {
+		// name: "Dev Build (dev-0005-20260227-abc1234)"
+		if start := strings.Index(release.Name, "("); start != -1 {
+			if end := strings.Index(release.Name[start:], ")"); end != -1 {
+				latest = release.Name[start+1 : start+end]
+			}
+		}
+		if latest == "" {
+			latest = release.TagName
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"current":    h.version,
+		"latest":     latest,
+		"channel":    channel,
+		"has_update": latest != "" && latest != h.version,
+	})
 }
 
 func (h *Handler) TriggerUpdate(w http.ResponseWriter, r *http.Request) {

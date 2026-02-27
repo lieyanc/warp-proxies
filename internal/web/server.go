@@ -43,6 +43,7 @@ func (s *Server) ListenAndServe() error {
 	apiMux.HandleFunc("POST /api/engine/restart", s.handler.RestartEngine)
 	apiMux.HandleFunc("POST /api/engine/mode", s.handler.SwitchMode)
 	apiMux.HandleFunc("GET /api/version", s.handler.GetVersion)
+	apiMux.HandleFunc("GET /api/update/check", s.handler.CheckUpdate)
 	apiMux.HandleFunc("POST /api/update", s.handler.TriggerUpdate)
 
 	if s.user != "" {

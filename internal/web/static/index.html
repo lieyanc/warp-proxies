@@ -61,6 +61,8 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff;fo
 button.primary:hover{background:var(--accent2);border-color:var(--accent2);color:#fff}
 button.danger{border-color:rgba(244,63,94,.3);color:var(--red)}
 button.danger:hover{background:var(--red);border-color:var(--red);color:#fff}
+button.update-available{background:var(--green);border-color:var(--green);color:#fff;font-weight:600}
+button.update-available:hover{background:#0ea472;border-color:#0ea472;color:#fff}
 
 /* Mode toggle */
 .mode-toggle{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg)}
@@ -577,6 +579,20 @@ async function loadVersion() {
   try {
     const data = await api('/api/version');
     document.getElementById('versionText').textContent = data.version;
+  } catch (e) { /* ignore */ }
+  // Check for updates
+  try {
+    const info = await api('/api/update/check');
+    const btn = document.getElementById('btnUpdate');
+    if (info.has_update) {
+      btn.classList.add('update-available');
+      btn.textContent = 'Update (' + info.latest + ')';
+      btn.title = 'Current: ' + info.current + '\nLatest: ' + info.latest;
+    } else {
+      btn.classList.remove('update-available');
+      btn.textContent = 'Update';
+      btn.title = 'Already up to date';
+    }
   } catch (e) { /* ignore */ }
 }
 
