@@ -52,25 +52,26 @@ get_channel() {
         local ch
         ch=$(json_field "$SETTINGS_FILE" "update_channel")
         if [[ -n "$ch" ]]; then
+            info "Update channel: ${ch} (from settings.json)" >&2
             echo "$ch"
             return
         fi
     fi
 
     # First run — interactive prompt
-    echo ""
-    echo -e "${CYAN}First run detected. No configuration found.${NC}"
-    echo -e "Default update channel: ${YELLOW}dev${NC} (pre-release builds from master)"
-    echo -e "Alternative: ${GREEN}stable${NC} (tagged releases only)"
-    echo ""
+    echo "" >&2
+    echo -e "${CYAN}First run detected. No configuration found.${NC}" >&2
+    echo -e "Default update channel: ${YELLOW}dev${NC} (pre-release builds from master)" >&2
+    echo -e "Alternative: ${GREEN}stable${NC} (tagged releases only)" >&2
+    echo "" >&2
     read -rp "Use dev channel? [Y/n] " answer
     case "$answer" in
         [nN]|[nN][oO])
-            info "Using stable channel"
+            info "Using stable channel" >&2
             echo "stable"
             ;;
         *)
-            info "Using dev channel"
+            info "Using dev channel" >&2
             echo "dev"
             ;;
     esac
@@ -149,6 +150,9 @@ main() {
     # Read web port from config (default 9090)
     if [[ -f "$SETTINGS_FILE" ]]; then
         web_addr=$(json_field "$SETTINGS_FILE" "web_addr")
+    fi
+    if [[ -n "${web_addr:-}" ]]; then
+        info "Web address: ${web_addr} (from settings.json)"
     fi
     web_addr="${web_addr:-:9090}"
     web_port=$(parse_port "$web_addr")
