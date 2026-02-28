@@ -17,8 +17,8 @@ var ErrNoAccounts = fmt.Errorf("no enabled accounts")
 
 // WGTagForAccount returns the sing-box outbound tag for the account with the given ID.
 // enabledAccounts must be in the same order as returned by store.GetEnabledAccounts().
-// The algorithm mirrors BuildOptions exactly so tag assignments are always consistent,
-// including the shared-outer case where multiple inners point to the same outer ID.
+// Returns "" if the account is not found in the list.
+// The algorithm mirrors BuildOptions so that tag assignments are always consistent.
 func WGTagForAccount(enabledAccounts []store.Account, accountID string) string {
 	outerIDSet := make(map[string]bool)
 	accountByID := make(map[string]store.Account)
@@ -30,14 +30,14 @@ func WGTagForAccount(enabledAccounts []store.Account, accountID string) string {
 	}
 
 	tagCount := make(map[string]int)
-	createdOuterTags := make(map[string]string) // outerID → assigned tag
-
 	for _, acc := range enabledAccounts {
 		if outerIDSet[acc.ID] {
+			// Outer accounts are processed when we encounter their inner account.
 			continue
 		}
 
 		if acc.GoolOuterID != "" {
+			// Gool inner account: compute both inner and outer tags (mirrors BuildOptions).
 			outerAcc, outerFound := accountByID[acc.GoolOuterID]
 
 			innerBaseTag := fmt.Sprintf("wg-%s", acc.Name)
@@ -48,15 +48,11 @@ func WGTagForAccount(enabledAccounts []store.Account, accountID string) string {
 			}
 
 			if outerFound {
-				outerTag, alreadyCreated := createdOuterTags[acc.GoolOuterID]
-				if !alreadyCreated {
-					outerBaseTag := fmt.Sprintf("wg-%s-outer", outerAcc.Name)
-					tagCount[outerBaseTag]++
-					outerTag = outerBaseTag
-					if tagCount[outerBaseTag] > 1 {
-						outerTag = fmt.Sprintf("%s-%d", outerBaseTag, tagCount[outerBaseTag])
-					}
-					createdOuterTags[acc.GoolOuterID] = outerTag
+				outerBaseTag := fmt.Sprintf("wg-%s-outer", outerAcc.Name)
+				tagCount[outerBaseTag]++
+				outerTag := outerBaseTag
+				if tagCount[outerBaseTag] > 1 {
+					outerTag = fmt.Sprintf("%s-%d", outerBaseTag, tagCount[outerBaseTag])
 				}
 				if outerAcc.ID == accountID {
 					return outerTag
@@ -67,6 +63,7 @@ func WGTagForAccount(enabledAccounts []store.Account, accountID string) string {
 				return innerTag
 			}
 		} else {
+			// Regular single account.
 			baseTag := fmt.Sprintf("wg-%s", acc.Name)
 			tagCount[baseTag]++
 			tag := baseTag
@@ -109,10 +106,9 @@ func SelectorTagsForAccounts(accounts []store.Account) []string {
 }
 
 // buildWGOutboundOptions creates a LegacyWireGuardOutboundOptions for the given account.
-// mtu: 1280 for single/inner, 1330 for gool outer.
-// detour: outbound tag to route UDP through; empty means direct.
-// workers: number of concurrent packet workers (scale with inner count for outer).
-func buildWGOutboundOptions(acc store.Account, mtu uint32, detour string, workers int) (*option.LegacyWireGuardOutboundOptions, error) {
+// mtu is the WireGuard MTU (1280 for single/inner, 1330 for gool outer).
+// detour is the outbound tag to route WireGuard UDP through; empty means direct.
+func buildWGOutboundOptions(acc store.Account, mtu uint32, detour string) (*option.LegacyWireGuardOutboundOptions, error) {
 	ipv4, err := netip.ParsePrefix(acc.IPv4)
 	if err != nil {
 		return nil, fmt.Errorf("parse IPv4 for %s: %w", acc.Name, err)
@@ -148,7 +144,7 @@ func buildWGOutboundOptions(acc store.Account, mtu uint32, detour string, worker
 		PeerPublicKey: acc.PeerPublicKey,
 		Reserved:      acc.Reserved,
 		MTU:           mtu,
-		Workers:       workers,
+		Workers:       1,
 	}, nil
 }
 
@@ -157,15 +153,13 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 		return nil, ErrNoAccounts
 	}
 
-	// Pre-scan: identify gool roles and build lookup maps.
+	// Pre-scan: identify outer accounts and build lookup map.
 	accountByID := make(map[string]store.Account)
 	outerIDSet := make(map[string]bool)
-	innerCountPerOuter := make(map[string]int) // outerID → number of inners using it
 	for _, acc := range accounts {
 		accountByID[acc.ID] = acc
 		if acc.GoolOuterID != "" {
 			outerIDSet[acc.GoolOuterID] = true
-			innerCountPerOuter[acc.GoolOuterID]++
 		}
 	}
 
@@ -213,19 +207,18 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 	var outbounds []option.Outbound
 	var selectorTags []string
 	tagCount := make(map[string]int)
-	createdOuterTags := make(map[string]string) // outerID → assigned outbound tag
 
 	for _, acc := range accounts {
 		if outerIDSet[acc.ID] {
-			// Outer accounts are emitted when we encounter the first inner that
-			// references them, preserving tag-assignment order.
+			// Outer accounts are created when we process their paired inner account.
 			continue
 		}
 
 		if acc.GoolOuterID != "" {
-			// Gool inner account.
+			// Gool inner account: create both outer and inner outbounds.
 			outerAcc, outerFound := accountByID[acc.GoolOuterID]
 
+			// Inner tag
 			innerBaseTag := fmt.Sprintf("wg-%s", acc.Name)
 			tagCount[innerBaseTag]++
 			innerTag := innerBaseTag
@@ -233,50 +226,49 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 				innerTag = fmt.Sprintf("%s-%d", innerBaseTag, tagCount[innerBaseTag])
 			}
 
-			var detour string
 			if outerFound {
-				outerTag, alreadyCreated := createdOuterTags[acc.GoolOuterID]
-				if !alreadyCreated {
-					// First inner referencing this outer: emit the outer outbound.
-					outerBaseTag := fmt.Sprintf("wg-%s-outer", outerAcc.Name)
-					tagCount[outerBaseTag]++
-					outerTag = outerBaseTag
-					if tagCount[outerBaseTag] > 1 {
-						outerTag = fmt.Sprintf("%s-%d", outerBaseTag, tagCount[outerBaseTag])
-					}
-
-					// Scale outer workers with inner count (capped at 4).
-					workers := innerCountPerOuter[outerAcc.ID]
-					if workers < 1 {
-						workers = 1
-					} else if workers > 4 {
-						workers = 4
-					}
-
-					outerWGOpts, err := buildWGOutboundOptions(outerAcc, 1330, "", workers)
-					if err != nil {
-						return nil, err
-					}
-					outbounds = append(outbounds, option.Outbound{
-						Type:    C.TypeWireGuard,
-						Tag:     outerTag,
-						Options: outerWGOpts,
-					})
-					createdOuterTags[acc.GoolOuterID] = outerTag
+				// Outer tag
+				outerBaseTag := fmt.Sprintf("wg-%s-outer", outerAcc.Name)
+				tagCount[outerBaseTag]++
+				outerTag := outerBaseTag
+				if tagCount[outerBaseTag] > 1 {
+					outerTag = fmt.Sprintf("%s-%d", outerBaseTag, tagCount[outerBaseTag])
 				}
-				detour = outerTag
+
+				// Outer outbound: MTU=1330, direct (no detour), not in selector.
+				outerWGOpts, err := buildWGOutboundOptions(outerAcc, 1330, "")
+				if err != nil {
+					return nil, err
+				}
+				outbounds = append(outbounds, option.Outbound{
+					Type:    C.TypeWireGuard,
+					Tag:     outerTag,
+					Options: outerWGOpts,
+				})
+
+				// Inner outbound: MTU=1280, detour through outer.
+				innerWGOpts, err := buildWGOutboundOptions(acc, 1280, outerTag)
+				if err != nil {
+					return nil, err
+				}
+				outbounds = append(outbounds, option.Outbound{
+					Type:    C.TypeWireGuard,
+					Tag:     innerTag,
+					Options: innerWGOpts,
+				})
+			} else {
+				// Outer unavailable (disabled), fall back to single WG.
+				wgOpts, err := buildWGOutboundOptions(acc, 1280, "")
+				if err != nil {
+					return nil, err
+				}
+				outbounds = append(outbounds, option.Outbound{
+					Type:    C.TypeWireGuard,
+					Tag:     innerTag,
+					Options: wgOpts,
+				})
 			}
 
-			// Inner outbound: MTU=1280, routes through outer (or direct if outer unavailable).
-			innerWGOpts, err := buildWGOutboundOptions(acc, 1280, detour, 1)
-			if err != nil {
-				return nil, err
-			}
-			outbounds = append(outbounds, option.Outbound{
-				Type:    C.TypeWireGuard,
-				Tag:     innerTag,
-				Options: innerWGOpts,
-			})
 			selectorTags = append(selectorTags, innerTag)
 		} else {
 			// Regular single account.
@@ -287,7 +279,7 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 				tag = fmt.Sprintf("%s-%d", baseTag, tagCount[baseTag])
 			}
 
-			wgOpts, err := buildWGOutboundOptions(acc, 1280, "", 1)
+			wgOpts, err := buildWGOutboundOptions(acc, 1280, "")
 			if err != nil {
 				return nil, err
 			}
@@ -349,10 +341,14 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 	}
 
 	// DNS configuration:
+	// Two DNS servers with different purposes:
 	// - "dns-endpoint": DoH via 1.1.1.1, direct outbound. Used ONLY by
-	//   WireGuard outbounds to resolve endpoint hostnames. Avoids fake-IP interception.
-	// - "dns-proxy": UDP 1.1.1.1, through "proxy" outbound. Default resolver
-	//   for proxied traffic so DNS is not leaked to the local network.
+	//   WireGuard outbounds to resolve endpoint hostnames (e.g.
+	//   engage.cloudflareclient.com). Avoids fake-IP interception from
+	//   local proxy tools.
+	// - "dns-proxy": UDP 1.1.1.1, through "proxy" outbound. Default
+	//   resolver for proxied traffic — DNS queries go through the WARP
+	//   tunnel so DNS is not leaked to the local network.
 	dnsOpts := &option.DNSOptions{
 		RawDNSOptions: option.RawDNSOptions{
 			Servers: []option.DNSServerOptions{

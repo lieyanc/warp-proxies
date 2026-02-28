@@ -63,9 +63,6 @@ button.danger{border-color:rgba(244,63,94,.3);color:var(--red)}
 button.danger:hover{background:var(--red);border-color:var(--red);color:#fff}
 button.update-available{background:var(--green);border-color:var(--green);color:#fff;font-weight:600}
 button.update-available:hover{background:#0ea472;border-color:#0ea472;color:#fff}
-button.pending-restart{background:#f59e0b;border-color:#f59e0b;color:#fff;font-weight:600;animation:pendingPulse 2s ease-in-out infinite}
-button.pending-restart:hover{background:#d97706;border-color:#d97706;color:#fff}
-@keyframes pendingPulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.4)}50%{box-shadow:0 0 0 6px rgba(245,158,11,0)}}
 
 /* Mode toggle */
 .mode-toggle{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg)}
@@ -143,9 +140,7 @@ input::placeholder{color:var(--text3)}
 
 /* Gool badge */
 .badge-gool{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;background:rgba(168,85,247,.15);color:#a855f7;border:1px solid rgba(168,85,247,.25);margin-left:4px;vertical-align:middle}
-.badge-outer{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(80,88,114,.2);color:var(--text2);border:1px solid rgba(80,88,114,.3);margin-left:4px;vertical-align:middle}
-.row-outer td{background:rgba(255,255,255,.012) !important}
-.row-outer:hover td{background:rgba(255,255,255,.025) !important}
+.row-outer{opacity:0.55}
 
 /* Responsive */
 @media(max-width:640px){
@@ -213,8 +208,8 @@ input::placeholder{color:var(--text3)}
       </div>
       <button class="primary" onclick="showAddModal()">+ Add Account</button>
       <button onclick="showBatchModal()">+ Batch Add</button>
-      <button onclick="showGoolModal()">+ Gool Group</button>
-      <button id="btnRestart" onclick="restartEngine()">Restart Engine</button>
+      <button onclick="showGoolModal()">+ Gool Pair</button>
+      <button onclick="restartEngine()">Restart Engine</button>
       <button onclick="showSettingsModal()">Settings</button>
       <button id="btnUpdate" onclick="triggerUpdate()">Update</button>
     </div>
@@ -271,10 +266,9 @@ input::placeholder{color:var(--text3)}
 
 <div class="modal-overlay" id="goolModal">
   <div class="modal">
-    <h3>New Gool Pairs (WARP-in-WARP)</h3>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:16px">Creates N independent pairs, each with its own outer tunnel. Each pair gets a distinct exit IP because each outer has a unique WARP address.</p>
-    <div class="form-row"><label>Name</label><input id="goolName" placeholder="e.g. jp"></div>
-    <div class="form-row"><label>Pairs</label><input id="goolCount" type="number" value="3" min="1" max="10"></div>
+    <h3>Create Gool Pair (WARP-in-WARP)</h3>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:16px">Creates an outer + inner account pair. The inner account routes through the outer tunnel for a different exit IP.</p>
+    <div class="form-row"><label>Name</label><input id="goolName" placeholder="e.g. jp1"></div>
     <div class="form-row"><label>Endpoint</label><input id="goolEndpoint" placeholder="engage.cloudflareclient.com"></div>
     <div class="form-row"><label>Port</label><input id="goolPort" type="number" value="2408"></div>
     <div class="btn-row">
@@ -320,20 +314,6 @@ input::placeholder{color:var(--text3)}
 const API = '';
 let refreshTimer = null;
 const ipCache = {};
-let pendingRestart = false;
-
-function setPendingRestart(val) {
-  pendingRestart = val;
-  const btn = document.getElementById('btnRestart');
-  if (!btn) return;
-  if (val) {
-    btn.classList.add('pending-restart');
-    btn.textContent = 'Restart Engine (!)';
-  } else {
-    btn.classList.remove('pending-restart');
-    btn.textContent = 'Restart Engine';
-  }
-}
 
 // Auth helpers
 function getAuth() { return localStorage.getItem('warp_auth'); }
@@ -477,36 +457,22 @@ async function refresh() {
     const tbody = document.getElementById('accountsTable');
     const outerIDs = new Set(accounts.filter(a => a.gool_outer_id).map(a => a.gool_outer_id));
     const accountMap = {};
-    const innerCountByOuter = {};
-    accounts.forEach(a => {
-      accountMap[a.id] = a;
-      if (a.gool_outer_id) innerCountByOuter[a.gool_outer_id] = (innerCountByOuter[a.gool_outer_id] || 0) + 1;
-    });
+    accounts.forEach(a => { accountMap[a.id] = a; });
     tbody.innerHTML = accounts.map(a => {
       const isOuter = outerIDs.has(a.id);
       const isInner = !!a.gool_outer_id;
       if (isOuter) {
-        const innerCount = innerCountByOuter[a.id] || 0;
-        // Find the linked inner name(s) for display
-        const linkedInners = accounts.filter(x => x.gool_outer_id === a.id).map(x => x.name);
-        const linkedLabel = linkedInners.length === 1
-          ? `<span style="font-size:10px;color:var(--text2)">↳ ${esc(linkedInners[0])}</span>`
-          : `<span style="font-size:10px;color:var(--text2)">${innerCount} inner${innerCount !== 1 ? 's' : ''}</span>`;
         return `<tr class="row-outer">
-          <td>${esc(a.name)} <span class="badge-outer">OUTER</span> ${linkedLabel}</td>
+          <td>${esc(a.name)} <span style="color:var(--text3);font-size:11px">[outer tunnel]</span></td>
           <td>${esc(a.endpoint)}:${a.endpoint_port}</td>
           <td>${esc(a.ipv4)}</td>
-          <td id="ip-${a.id}" style="font-family:'SF Mono',Consolas,monospace;font-size:12px">${ipCache[a.id] ? esc(ipCache[a.id]) : '<span style="color:var(--text3)">-</span>'}</td>
+          <td style="color:var(--text3)">-</td>
           <td class="disabled">Outer</td>
-          <td class="actions">
-            <button onclick="checkIP('${a.id}',this)">IP</button>
-            <button class="danger" onclick="deleteAccount('${a.id}','${esc(a.name)}',false,true,${innerCount})">Delete</button>
-          </td>
+          <td class="actions"><span style="font-size:11px;color:var(--text3)">managed by inner</span></td>
         </tr>`;
       }
-      const outerName = isInner && accountMap[a.gool_outer_id] ? accountMap[a.gool_outer_id].name : null;
       const nameCell = isInner
-        ? `${esc(a.name)} <span class="badge-gool">GOOL</span>${outerName ? ` <span style="font-size:10px;color:var(--text3)">via ${esc(outerName)}</span>` : ''}`
+        ? `${esc(a.name)} <span class="badge-gool">GOOL</span>`
         : esc(a.name);
       return `<tr>
         <td>${nameCell}</td>
@@ -518,7 +484,7 @@ async function refresh() {
           <button onclick="toggleAccount('${a.id}', ${!a.enabled})">${a.enabled ? 'Disable' : 'Enable'}</button>
           <button onclick="editEndpoint('${a.id}','${esc(a.endpoint)}',${a.endpoint_port})">Endpoint</button>
           <button onclick="checkIP('${a.id}',this)" ${a.enabled ? '' : 'disabled'}>IP</button>
-          <button class="danger" onclick="deleteAccount('${a.id}','${esc(a.name)}',${isInner},false,0)">Delete</button>
+          <button class="danger" onclick="deleteAccount('${a.id}','${esc(a.name)}',${isInner})">Delete</button>
         </td>
       </tr>`;
     }).join('');
@@ -534,8 +500,7 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 async function switchMode(mode) {
   try {
     await api('/api/engine/mode', { method: 'POST', body: JSON.stringify({ mode }) });
-    toast(`Mode set to ${mode} — restart engine to apply`);
-    setPendingRestart(true);
+    toast(`Switched to ${mode} mode`);
     refresh();
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
@@ -543,7 +508,6 @@ async function switchMode(mode) {
 async function restartEngine() {
   try {
     await api('/api/engine/restart', { method: 'POST' });
-    setPendingRestart(false);
     toast('Engine restarting...');
     setTimeout(refresh, 1000);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
@@ -556,19 +520,16 @@ function showGoolModal() { document.getElementById('goolModal').classList.add('s
 async function createGoolPair() {
   const name = document.getElementById('goolName').value.trim();
   if (!name) { toast('Name is required', 'error'); return; }
-  const count = parseInt(document.getElementById('goolCount').value) || 1;
   try {
     const body = {
       name,
-      count,
       endpoint: document.getElementById('goolEndpoint').value,
       endpoint_port: parseInt(document.getElementById('goolPort').value) || 2408,
     };
-    toast(`Registering ${count} gool pair${count !== 1 ? 's' : ''}...`);
+    toast('Registering gool pair...');
     closeModals();
     await api('/api/accounts/gool', { method: 'POST', body: JSON.stringify(body) });
-    toast(`${count} gool pair${count !== 1 ? 's' : ''} created — restart engine to apply`);
-    setPendingRestart(true);
+    toast('Gool pair created');
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
@@ -595,8 +556,7 @@ async function createAccount() {
       endpoint_port: parseInt(document.getElementById('addPort').value) || 2408,
     };
     await api('/api/accounts', { method: 'POST', body: JSON.stringify(body) });
-    toast('Account registered — restart engine to apply');
-    setPendingRestart(true);
+    toast('Account registered');
     closeModals();
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
@@ -612,25 +572,18 @@ async function batchCreate() {
     toast('Batch registration started...');
     closeModals();
     await api('/api/accounts/batch', { method: 'POST', body: JSON.stringify(body) });
-    toast('Batch registration complete — restart engine to apply');
-    setPendingRestart(true);
+    toast('Batch registration complete');
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
-async function deleteAccount(id, name, isGoolInner, isOuter, innerCount) {
-  let msg = `Delete "${name}"?`;
-  if (isOuter) {
-    const plural = innerCount !== 1 ? 's' : '';
-    msg += `\n\nThis will also delete ${innerCount} inner account${plural}.`;
-  } else if (isGoolInner) {
-    msg += '\n\nThis will also delete the outer tunnel if it has no remaining inners.';
-  }
+async function deleteAccount(id, name, isGoolInner) {
+  let msg = `Delete account "${name}"?`;
+  if (isGoolInner) msg += '\n\nThis will also delete the associated outer tunnel account.';
   if (!confirm(msg)) return;
   try {
     await api(`/api/accounts/${id}`, { method: 'DELETE' });
-    toast('Account deleted — restart engine to apply');
-    setPendingRestart(true);
+    toast('Account deleted');
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
@@ -638,8 +591,7 @@ async function deleteAccount(id, name, isGoolInner, isOuter, innerCount) {
 async function toggleAccount(id, enabled) {
   try {
     await api(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
-    toast((enabled ? 'Account enabled' : 'Account disabled') + ' — restart engine to apply');
-    setPendingRestart(true);
+    toast(enabled ? 'Account enabled' : 'Account disabled');
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
@@ -659,8 +611,7 @@ async function saveEndpoint() {
       endpoint_port: parseInt(document.getElementById('editPort').value),
     };
     await api(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
-    toast('Endpoint updated — restart engine to apply');
-    setPendingRestart(true);
+    toast('Endpoint updated');
     closeModals();
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
@@ -679,8 +630,7 @@ async function saveSettings() {
       clash_api_secret: document.getElementById('setClashSecret').value,
     };
     await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
-    toast('Settings saved — restart engine to apply');
-    setPendingRestart(true);
+    toast('Settings saved');
     closeModals();
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }

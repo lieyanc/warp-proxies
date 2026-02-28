@@ -103,18 +103,6 @@ func (s *Store) GetAccountByID(id string) (Account, bool) {
 	return Account{}, false
 }
 
-func (s *Store) FindInnersByOuterID(outerID string) []Account {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var result []Account
-	for _, a := range s.accounts {
-		if a.GoolOuterID == outerID {
-			result = append(result, a)
-		}
-	}
-	return result
-}
-
 func (s *Store) AddAccount(a Account) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

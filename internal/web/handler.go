@@ -134,6 +134,8 @@ func (h *Handler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("registered WARP account", "name", account.Name, "id", account.ID)
 
+	go h.restartEngine()
+
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":   account.ID,
 		"name": account.Name,
@@ -190,13 +192,14 @@ func (h *Handler) BatchCreateAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	go h.restartEngine()
+
 	writeJSON(w, http.StatusCreated, results)
 }
 
 func (h *Handler) CreateGoolPair(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name         string `json:"name"`
-		Count        int    `json:"count"`
 		Endpoint     string `json:"endpoint"`
 		EndpointPort uint16 `json:"endpoint_port"`
 	}
@@ -208,35 +211,27 @@ func (h *Handler) CreateGoolPair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if req.Count <= 0 {
-		req.Count = 1
-	}
-	if req.Count > 10 {
-		req.Count = 10
-	}
 
-	outers, inners, err := h.warpClient.RegisterGoolBatch(req.Name, req.Count, req.Endpoint, req.EndpointPort)
-	// Save all successfully registered accounts even on partial failure.
-	for _, outer := range outers {
-		if e := h.store.AddAccount(*outer); e != nil {
-			slog.Error("save outer account", "name", outer.Name, "err", e)
-		}
-	}
-	for _, inner := range inners {
-		if e := h.store.AddAccount(*inner); e != nil {
-			slog.Error("save inner account", "name", inner.Name, "err", e)
-		}
-	}
+	outer, inner, err := h.warpClient.RegisterGoolPair(req.Name, req.Endpoint, req.EndpointPort)
 	if err != nil {
-		if len(inners) == 0 {
-			writeError(w, http.StatusInternalServerError, "registration failed: "+err.Error())
-			return
-		}
-		slog.Warn("gool batch partially failed", "pairs_created", len(inners), "err", err)
+		slog.Error("register gool pair", "err", err)
+		writeError(w, http.StatusInternalServerError, "registration failed: "+err.Error())
+		return
 	}
 
-	slog.Info("registered gool pairs", "name", req.Name, "pairs", len(inners))
-	writeJSON(w, http.StatusCreated, map[string]any{"outers": outers, "inners": inners})
+	if err := h.store.AddAccount(*outer); err != nil {
+		writeError(w, http.StatusInternalServerError, "save outer account: "+err.Error())
+		return
+	}
+	if err := h.store.AddAccount(*inner); err != nil {
+		writeError(w, http.StatusInternalServerError, "save inner account: "+err.Error())
+		return
+	}
+
+	slog.Info("registered gool pair", "name", req.Name, "outer_id", outer.ID, "inner_id", inner.ID)
+	go h.restartEngine()
+
+	writeJSON(w, http.StatusCreated, map[string]any{"outer": outer, "inner": inner})
 }
 
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -246,30 +241,25 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Prevent direct deletion of an outer account while its inner account exists.
 	allAccounts := h.store.GetAccounts()
-
-	// Collect all inners if this is an outer being deleted (cascade).
-	var innerIDs []string
-	var goolOuterID string
 	for _, a := range allAccounts {
 		if a.GoolOuterID == id {
-			innerIDs = append(innerIDs, a.ID)
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("cannot delete outer account while inner account '%s' exists; delete the inner account first", a.Name))
+			return
 		}
+	}
+
+	// Check if the account being deleted is a gool inner (has a paired outer).
+	var goolOuterID string
+	for _, a := range allAccounts {
 		if a.ID == id {
 			goolOuterID = a.GoolOuterID
+			break
 		}
 	}
 
-	// Cascade-delete all inners first (if this is an outer).
-	var deletedInners []store.Account
-	for _, innerID := range innerIDs {
-		inner, found, _ := h.store.RemoveAccount(innerID)
-		if found {
-			deletedInners = append(deletedInners, inner)
-		}
-	}
-
-	// Delete the target account itself.
 	account, found, err := h.store.RemoveAccount(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "remove account: "+err.Error())
@@ -280,40 +270,31 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If this was an inner, clean up its outer if it has become orphaned.
-	var orphanedOuter store.Account
-	var orphanFound bool
+	// If this was an inner account, cascade-delete the paired outer account.
+	var outerAcc store.Account
+	var outerFound bool
 	if goolOuterID != "" {
-		remaining := 0
-		for _, a := range h.store.GetAccounts() {
-			if a.GoolOuterID == goolOuterID {
-				remaining++
-			}
-		}
-		if remaining == 0 {
-			orphanedOuter, orphanFound, _ = h.store.RemoveAccount(goolOuterID)
+		outerAcc, outerFound, _ = h.store.RemoveAccount(goolOuterID)
+		if outerFound {
+			slog.Info("deleted paired outer WARP account", "name", outerAcc.Name, "id", outerAcc.ID)
 		}
 	}
 
-	// Best-effort CF deletions.
+	// Try to delete from CF (best effort).
 	go func() {
 		if err := h.warpClient.Delete(account.ID, account.Token); err != nil {
 			slog.Warn("failed to delete account from CF", "id", account.ID, "err", err)
 		}
-		for _, inner := range deletedInners {
-			if err := h.warpClient.Delete(inner.ID, inner.Token); err != nil {
-				slog.Warn("failed to delete inner from CF", "id", inner.ID, "err", err)
-			}
-		}
-		if orphanFound {
-			if err := h.warpClient.Delete(orphanedOuter.ID, orphanedOuter.Token); err != nil {
-				slog.Warn("failed to delete orphaned outer from CF", "id", orphanedOuter.ID, "err", err)
+		if outerFound {
+			if err := h.warpClient.Delete(outerAcc.ID, outerAcc.Token); err != nil {
+				slog.Warn("failed to delete outer account from CF", "id", outerAcc.ID, "err", err)
 			}
 		}
 	}()
 
-	slog.Info("deleted WARP account", "name", account.Name, "id", account.ID,
-		"cascade_inners", len(deletedInners), "orphan_outer_cleaned", orphanFound)
+	go h.restartEngine()
+
+	slog.Info("deleted WARP account", "name", account.Name, "id", account.ID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -335,18 +316,23 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	needRestart := false
 	err := h.store.UpdateAccount(id, func(a *store.Account) {
 		if req.Name != nil {
 			a.Name = *req.Name
+			needRestart = true
 		}
 		if req.Enabled != nil {
 			a.Enabled = *req.Enabled
+			needRestart = true
 		}
 		if req.Endpoint != nil {
 			a.Endpoint = *req.Endpoint
+			needRestart = true
 		}
 		if req.EndpointPort != nil {
 			a.EndpointPort = *req.EndpointPort
+			needRestart = true
 		}
 	})
 	if err != nil {
@@ -356,6 +342,10 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "update account: "+err.Error())
 		return
+	}
+
+	if needRestart {
+		go h.restartEngine()
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
@@ -376,6 +366,8 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "save settings: "+err.Error())
 		return
 	}
+
+	go h.restartEngine()
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
@@ -431,7 +423,9 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Persist mode change
 	settings := h.store.GetSettings()
+	prevMode := settings.RotationMode
 	settings.RotationMode = mode
 	if err := h.store.SetSettings(settings); err != nil {
 		slog.Error("persist mode switch", "err", err)
@@ -439,8 +433,54 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("saved rotation mode (pending restart)", "mode", mode)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "saved", "mode": mode})
+	// Switching to or from roundrobin requires a full engine restart because
+	// the outbound type in the sing-box config changes (RoundRobin ↔ Selector).
+	if mode == "roundrobin" || prevMode == "roundrobin" {
+		go h.restartEngine()
+		slog.Info("switched rotation mode (restarting engine)", "mode", mode)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "switched", "mode": mode})
+		return
+	}
+
+	// For urltest ↔ random: switch in-place without restarting
+	b := h.engine.Box()
+	if b == nil {
+		writeError(w, http.StatusServiceUnavailable, "engine not running")
+		return
+	}
+
+	accounts := h.store.GetEnabledAccounts()
+	wgTags := engine.SelectorTagsForAccounts(accounts)
+
+	if len(wgTags) == 0 {
+		writeError(w, http.StatusBadRequest, "no enabled accounts")
+		return
+	}
+
+	engine.SwitchMode(b.Outbound(), mode, wgTags)
+
+	// Update rotator
+	if engine.IsRotatingMode(mode) {
+		rotator := engine.NewRotator(
+			mode,
+			time.Duration(settings.RandomInterval)*time.Second,
+			wgTags,
+			func() adapter.OutboundManager {
+				bx := h.engine.Box()
+				if bx == nil {
+					return nil
+				}
+				return bx.Outbound()
+			},
+		)
+		h.engine.SetRotator(rotator)
+		rotator.Start()
+	} else {
+		h.engine.SetRotator(nil)
+	}
+
+	slog.Info("switched rotation mode", "mode", mode)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "switched", "mode": mode})
 }
 
 func (h *Handler) GetVersion(w http.ResponseWriter, r *http.Request) {

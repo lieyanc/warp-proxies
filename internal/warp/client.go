@@ -122,48 +122,20 @@ func (c *Client) Register(name string, endpoint string, endpointPort uint16) (*s
 	return account, nil
 }
 
-// RegisterGoolPair registers one outer + one inner WARP account pair.
-// The inner's GoolOuterID is set to the outer's ID so it routes through it.
-func (c *Client) RegisterGoolPair(name, endpoint string, port uint16) (*store.Account, *store.Account, error) {
-	outer, err := c.Register(name+"-outer", endpoint, port)
+// RegisterGoolPair registers two WARP accounts as a gool (WARP-in-WARP) pair.
+// The outer account acts as the underlying tunnel; the inner account routes through it.
+// Caller is responsible for persisting both returned accounts.
+func (c *Client) RegisterGoolPair(name, endpoint string, port uint16) (outer, inner *store.Account, err error) {
+	outer, err = c.Register(name+"-outer", endpoint, port)
 	if err != nil {
 		return nil, nil, fmt.Errorf("register outer: %w", err)
 	}
-	time.Sleep(time.Second)
-	inner, err := c.Register(name, endpoint, port)
+	inner, err = c.Register(name, endpoint, port)
 	if err != nil {
-		return outer, nil, fmt.Errorf("register inner: %w", err)
+		return nil, nil, fmt.Errorf("register inner: %w", err)
 	}
 	inner.GoolOuterID = outer.ID
 	return outer, inner, nil
-}
-
-// RegisterGoolBatch registers pairCount independent gool pairs.
-// Each pair has its own outer account so exit IPs are distinct per pair.
-// For pairCount == 1 the pair is named (baseName-outer, baseName).
-// For pairCount > 1 pairs are named (baseName-1-outer, baseName-1), …, (baseName-N-outer, baseName-N).
-func (c *Client) RegisterGoolBatch(baseName string, pairCount int, endpoint string, port uint16) ([]*store.Account, []*store.Account, error) {
-	var outers, inners []*store.Account
-	for i := 1; i <= pairCount; i++ {
-		pairName := baseName
-		if pairCount > 1 {
-			pairName = fmt.Sprintf("%s-%d", baseName, i)
-		}
-		outer, inner, err := c.RegisterGoolPair(pairName, endpoint, port)
-		if outer != nil {
-			outers = append(outers, outer)
-		}
-		if inner != nil {
-			inners = append(inners, inner)
-		}
-		if err != nil {
-			return outers, inners, fmt.Errorf("register pair %d: %w", i, err)
-		}
-		if i < pairCount {
-			time.Sleep(time.Second)
-		}
-	}
-	return outers, inners, nil
 }
 
 func (c *Client) Delete(id, token string) error {
