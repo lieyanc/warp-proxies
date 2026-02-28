@@ -215,88 +215,28 @@ func (h *Handler) CreateGoolPair(w http.ResponseWriter, r *http.Request) {
 		req.Count = 10
 	}
 
-	outer, inners, err := h.warpClient.RegisterGoolBatch(req.Name, req.Count, req.Endpoint, req.EndpointPort)
-	if err != nil {
-		slog.Error("register gool batch", "err", err)
-		writeError(w, http.StatusInternalServerError, "registration failed: "+err.Error())
-		return
-	}
-
-	if err := h.store.AddAccount(*outer); err != nil {
-		writeError(w, http.StatusInternalServerError, "save outer account: "+err.Error())
-		return
+	outers, inners, err := h.warpClient.RegisterGoolBatch(req.Name, req.Count, req.Endpoint, req.EndpointPort)
+	// Save all successfully registered accounts even on partial failure.
+	for _, outer := range outers {
+		if e := h.store.AddAccount(*outer); e != nil {
+			slog.Error("save outer account", "name", outer.Name, "err", e)
+		}
 	}
 	for _, inner := range inners {
-		if err := h.store.AddAccount(*inner); err != nil {
-			slog.Error("save inner account", "name", inner.Name, "err", err)
+		if e := h.store.AddAccount(*inner); e != nil {
+			slog.Error("save inner account", "name", inner.Name, "err", e)
 		}
 	}
-
-	slog.Info("registered gool group", "name", req.Name, "inners", len(inners), "outer_id", outer.ID)
-	writeJSON(w, http.StatusCreated, map[string]any{"outer": outer, "inners": inners})
-}
-
-// AddGoolInners registers count new inner accounts for an existing outer account.
-func (h *Handler) AddGoolInners(w http.ResponseWriter, r *http.Request) {
-	outerID := r.PathValue("id")
-	if outerID == "" {
-		writeError(w, http.StatusBadRequest, "missing outer account id")
-		return
-	}
-
-	var req struct {
-		Count        int    `json:"count"`
-		Endpoint     string `json:"endpoint"`
-		EndpointPort uint16 `json:"endpoint_port"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.Count <= 0 {
-		req.Count = 1
-	}
-	if req.Count > 10 {
-		req.Count = 10
-	}
-
-	outerAcc, found := h.store.GetAccountByID(outerID)
-	if !found {
-		writeError(w, http.StatusNotFound, "outer account not found")
-		return
-	}
-
-	// Derive base name from outer (strip "-outer" suffix if present).
-	baseName := strings.TrimSuffix(outerAcc.Name, "-outer")
-
-	// Starting index for new inner names based on existing inner count.
-	existingInners := h.store.FindInnersByOuterID(outerID)
-	startIdx := len(existingInners) + 1
-
-	var results []*store.Account
-	for i := 0; i < req.Count; i++ {
-		innerName := fmt.Sprintf("%s-%d", baseName, startIdx+i)
-		inner, err := h.warpClient.RegisterGoolInner(outerID, innerName, req.Endpoint, req.EndpointPort)
-		if err != nil {
-			slog.Error("register gool inner", "index", i, "err", err)
-			break
+	if err != nil {
+		if len(inners) == 0 {
+			writeError(w, http.StatusInternalServerError, "registration failed: "+err.Error())
+			return
 		}
-		if err := h.store.AddAccount(*inner); err != nil {
-			slog.Error("save gool inner", "name", inner.Name, "err", err)
-		}
-		results = append(results, inner)
-		if i < req.Count-1 {
-			time.Sleep(time.Second)
-		}
+		slog.Warn("gool batch partially failed", "pairs_created", len(inners), "err", err)
 	}
 
-	if len(results) == 0 {
-		writeError(w, http.StatusInternalServerError, "failed to register any inner accounts")
-		return
-	}
-
-	slog.Info("added gool inners", "outer_id", outerID, "count", len(results))
-	writeJSON(w, http.StatusCreated, map[string]any{"inners": results})
+	slog.Info("registered gool pairs", "name", req.Name, "pairs", len(inners))
+	writeJSON(w, http.StatusCreated, map[string]any{"outers": outers, "inners": inners})
 }
 
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {

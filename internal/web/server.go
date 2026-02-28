@@ -39,7 +39,6 @@ func (s *Server) ListenAndServe() error {
 	apiMux.HandleFunc("POST /api/accounts", s.handler.CreateAccount)
 	apiMux.HandleFunc("POST /api/accounts/batch", s.handler.BatchCreateAccounts)
 	apiMux.HandleFunc("POST /api/accounts/gool", s.handler.CreateGoolPair)
-	apiMux.HandleFunc("POST /api/accounts/gool/{id}/inner", s.handler.AddGoolInners)
 	apiMux.HandleFunc("DELETE /api/accounts/{id}", s.handler.DeleteAccount)
 	apiMux.HandleFunc("PATCH /api/accounts/{id}", s.handler.UpdateAccount)
 	apiMux.HandleFunc("GET /api/accounts/{id}/ip", s.handler.CheckAccountIP)
