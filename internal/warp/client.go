@@ -122,20 +122,51 @@ func (c *Client) Register(name string, endpoint string, endpointPort uint16) (*s
 	return account, nil
 }
 
-// RegisterGoolPair registers two WARP accounts as a gool (WARP-in-WARP) pair.
-// The outer account acts as the underlying tunnel; the inner account routes through it.
-// Caller is responsible for persisting both returned accounts.
-func (c *Client) RegisterGoolPair(name, endpoint string, port uint16) (outer, inner *store.Account, err error) {
-	outer, err = c.Register(name+"-outer", endpoint, port)
+// RegisterGoolBatch registers one outer and innerCount inner WARP accounts.
+// If innerCount == 1 the inner is named baseName; for count > 1 they are named
+// baseName-1, baseName-2, …, baseName-N.
+func (c *Client) RegisterGoolBatch(baseName string, innerCount int, endpoint string, port uint16) (*store.Account, []*store.Account, error) {
+	outer, err := c.Register(baseName+"-outer", endpoint, port)
 	if err != nil {
 		return nil, nil, fmt.Errorf("register outer: %w", err)
 	}
-	inner, err = c.Register(name, endpoint, port)
-	if err != nil {
-		return nil, nil, fmt.Errorf("register inner: %w", err)
+
+	var inners []*store.Account
+	for i := 1; i <= innerCount; i++ {
+		innerName := baseName
+		if innerCount > 1 {
+			innerName = fmt.Sprintf("%s-%d", baseName, i)
+		}
+		inner, err := c.Register(innerName, endpoint, port)
+		if err != nil {
+			return outer, inners, fmt.Errorf("register inner %d: %w", i, err)
+		}
+		inner.GoolOuterID = outer.ID
+		inners = append(inners, inner)
+		if i < innerCount {
+			time.Sleep(time.Second)
+		}
 	}
-	inner.GoolOuterID = outer.ID
-	return outer, inner, nil
+	return outer, inners, nil
+}
+
+// RegisterGoolInner registers a single inner account linked to an existing outer.
+func (c *Client) RegisterGoolInner(outerID, innerName, endpoint string, port uint16) (*store.Account, error) {
+	inner, err := c.Register(innerName, endpoint, port)
+	if err != nil {
+		return nil, err
+	}
+	inner.GoolOuterID = outerID
+	return inner, nil
+}
+
+// RegisterGoolPair is kept for compatibility; creates one outer + one inner.
+func (c *Client) RegisterGoolPair(name, endpoint string, port uint16) (outer, inner *store.Account, err error) {
+	outerAcc, inners, err := c.RegisterGoolBatch(name, 1, endpoint, port)
+	if err != nil || len(inners) == 0 {
+		return nil, nil, err
+	}
+	return outerAcc, inners[0], nil
 }
 
 func (c *Client) Delete(id, token string) error {

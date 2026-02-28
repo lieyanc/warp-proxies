@@ -196,6 +196,7 @@ func (h *Handler) BatchCreateAccounts(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateGoolPair(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name         string `json:"name"`
+		Count        int    `json:"count"`
 		Endpoint     string `json:"endpoint"`
 		EndpointPort uint16 `json:"endpoint_port"`
 	}
@@ -207,10 +208,16 @@ func (h *Handler) CreateGoolPair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if req.Count <= 0 {
+		req.Count = 1
+	}
+	if req.Count > 10 {
+		req.Count = 10
+	}
 
-	outer, inner, err := h.warpClient.RegisterGoolPair(req.Name, req.Endpoint, req.EndpointPort)
+	outer, inners, err := h.warpClient.RegisterGoolBatch(req.Name, req.Count, req.Endpoint, req.EndpointPort)
 	if err != nil {
-		slog.Error("register gool pair", "err", err)
+		slog.Error("register gool batch", "err", err)
 		writeError(w, http.StatusInternalServerError, "registration failed: "+err.Error())
 		return
 	}
@@ -219,14 +226,77 @@ func (h *Handler) CreateGoolPair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "save outer account: "+err.Error())
 		return
 	}
-	if err := h.store.AddAccount(*inner); err != nil {
-		writeError(w, http.StatusInternalServerError, "save inner account: "+err.Error())
+	for _, inner := range inners {
+		if err := h.store.AddAccount(*inner); err != nil {
+			slog.Error("save inner account", "name", inner.Name, "err", err)
+		}
+	}
+
+	slog.Info("registered gool group", "name", req.Name, "inners", len(inners), "outer_id", outer.ID)
+	writeJSON(w, http.StatusCreated, map[string]any{"outer": outer, "inners": inners})
+}
+
+// AddGoolInners registers count new inner accounts for an existing outer account.
+func (h *Handler) AddGoolInners(w http.ResponseWriter, r *http.Request) {
+	outerID := r.PathValue("id")
+	if outerID == "" {
+		writeError(w, http.StatusBadRequest, "missing outer account id")
 		return
 	}
 
-	slog.Info("registered gool pair", "name", req.Name, "outer_id", outer.ID, "inner_id", inner.ID)
+	var req struct {
+		Count        int    `json:"count"`
+		Endpoint     string `json:"endpoint"`
+		EndpointPort uint16 `json:"endpoint_port"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Count <= 0 {
+		req.Count = 1
+	}
+	if req.Count > 10 {
+		req.Count = 10
+	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{"outer": outer, "inner": inner})
+	outerAcc, found := h.store.GetAccountByID(outerID)
+	if !found {
+		writeError(w, http.StatusNotFound, "outer account not found")
+		return
+	}
+
+	// Derive base name from outer (strip "-outer" suffix if present).
+	baseName := strings.TrimSuffix(outerAcc.Name, "-outer")
+
+	// Starting index for new inner names based on existing inner count.
+	existingInners := h.store.FindInnersByOuterID(outerID)
+	startIdx := len(existingInners) + 1
+
+	var results []*store.Account
+	for i := 0; i < req.Count; i++ {
+		innerName := fmt.Sprintf("%s-%d", baseName, startIdx+i)
+		inner, err := h.warpClient.RegisterGoolInner(outerID, innerName, req.Endpoint, req.EndpointPort)
+		if err != nil {
+			slog.Error("register gool inner", "index", i, "err", err)
+			break
+		}
+		if err := h.store.AddAccount(*inner); err != nil {
+			slog.Error("save gool inner", "name", inner.Name, "err", err)
+		}
+		results = append(results, inner)
+		if i < req.Count-1 {
+			time.Sleep(time.Second)
+		}
+	}
+
+	if len(results) == 0 {
+		writeError(w, http.StatusInternalServerError, "failed to register any inner accounts")
+		return
+	}
+
+	slog.Info("added gool inners", "outer_id", outerID, "count", len(results))
+	writeJSON(w, http.StatusCreated, map[string]any{"inners": results})
 }
 
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
@@ -236,25 +306,30 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent direct deletion of an outer account while its inner account exists.
 	allAccounts := h.store.GetAccounts()
-	for _, a := range allAccounts {
-		if a.GoolOuterID == id {
-			writeError(w, http.StatusBadRequest,
-				fmt.Sprintf("cannot delete outer account while inner account '%s' exists; delete the inner account first", a.Name))
-			return
-		}
-	}
 
-	// Check if the account being deleted is a gool inner (has a paired outer).
+	// Collect all inners if this is an outer being deleted (cascade).
+	var innerIDs []string
 	var goolOuterID string
 	for _, a := range allAccounts {
+		if a.GoolOuterID == id {
+			innerIDs = append(innerIDs, a.ID)
+		}
 		if a.ID == id {
 			goolOuterID = a.GoolOuterID
-			break
 		}
 	}
 
+	// Cascade-delete all inners first (if this is an outer).
+	var deletedInners []store.Account
+	for _, innerID := range innerIDs {
+		inner, found, _ := h.store.RemoveAccount(innerID)
+		if found {
+			deletedInners = append(deletedInners, inner)
+		}
+	}
+
+	// Delete the target account itself.
 	account, found, err := h.store.RemoveAccount(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "remove account: "+err.Error())
@@ -265,29 +340,40 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If this was an inner account, cascade-delete the paired outer account.
-	var outerAcc store.Account
-	var outerFound bool
+	// If this was an inner, clean up its outer if it has become orphaned.
+	var orphanedOuter store.Account
+	var orphanFound bool
 	if goolOuterID != "" {
-		outerAcc, outerFound, _ = h.store.RemoveAccount(goolOuterID)
-		if outerFound {
-			slog.Info("deleted paired outer WARP account", "name", outerAcc.Name, "id", outerAcc.ID)
+		remaining := 0
+		for _, a := range h.store.GetAccounts() {
+			if a.GoolOuterID == goolOuterID {
+				remaining++
+			}
+		}
+		if remaining == 0 {
+			orphanedOuter, orphanFound, _ = h.store.RemoveAccount(goolOuterID)
 		}
 	}
 
-	// Try to delete from CF (best effort).
+	// Best-effort CF deletions.
 	go func() {
 		if err := h.warpClient.Delete(account.ID, account.Token); err != nil {
 			slog.Warn("failed to delete account from CF", "id", account.ID, "err", err)
 		}
-		if outerFound {
-			if err := h.warpClient.Delete(outerAcc.ID, outerAcc.Token); err != nil {
-				slog.Warn("failed to delete outer account from CF", "id", outerAcc.ID, "err", err)
+		for _, inner := range deletedInners {
+			if err := h.warpClient.Delete(inner.ID, inner.Token); err != nil {
+				slog.Warn("failed to delete inner from CF", "id", inner.ID, "err", err)
+			}
+		}
+		if orphanFound {
+			if err := h.warpClient.Delete(orphanedOuter.ID, orphanedOuter.Token); err != nil {
+				slog.Warn("failed to delete orphaned outer from CF", "id", orphanedOuter.ID, "err", err)
 			}
 		}
 	}()
 
-	slog.Info("deleted WARP account", "name", account.Name, "id", account.ID)
+	slog.Info("deleted WARP account", "name", account.Name, "id", account.ID,
+		"cascade_inners", len(deletedInners), "orphan_outer_cleaned", orphanFound)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

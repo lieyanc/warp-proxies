@@ -143,7 +143,9 @@ input::placeholder{color:var(--text3)}
 
 /* Gool badge */
 .badge-gool{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;background:rgba(168,85,247,.15);color:#a855f7;border:1px solid rgba(168,85,247,.25);margin-left:4px;vertical-align:middle}
-.row-outer{opacity:0.55}
+.badge-outer{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(80,88,114,.2);color:var(--text2);border:1px solid rgba(80,88,114,.3);margin-left:4px;vertical-align:middle}
+.row-outer td{background:rgba(255,255,255,.012) !important}
+.row-outer:hover td{background:rgba(255,255,255,.025) !important}
 
 /* Responsive */
 @media(max-width:640px){
@@ -211,7 +213,7 @@ input::placeholder{color:var(--text3)}
       </div>
       <button class="primary" onclick="showAddModal()">+ Add Account</button>
       <button onclick="showBatchModal()">+ Batch Add</button>
-      <button onclick="showGoolModal()">+ Gool Pair</button>
+      <button onclick="showGoolModal()">+ Gool Group</button>
       <button id="btnRestart" onclick="restartEngine()">Restart Engine</button>
       <button onclick="showSettingsModal()">Settings</button>
       <button id="btnUpdate" onclick="triggerUpdate()">Update</button>
@@ -269,14 +271,30 @@ input::placeholder{color:var(--text3)}
 
 <div class="modal-overlay" id="goolModal">
   <div class="modal">
-    <h3>Create Gool Pair (WARP-in-WARP)</h3>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:16px">Creates an outer + inner account pair. The inner account routes through the outer tunnel for a different exit IP.</p>
-    <div class="form-row"><label>Name</label><input id="goolName" placeholder="e.g. jp1"></div>
+    <h3>New Gool Group (WARP-in-WARP)</h3>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:16px">Creates one shared outer tunnel + N inner accounts. All inners route through the same outer for distinct exit IPs.</p>
+    <div class="form-row"><label>Name</label><input id="goolName" placeholder="e.g. jp"></div>
+    <div class="form-row"><label>Inner Count</label><input id="goolCount" type="number" value="3" min="1" max="10"></div>
     <div class="form-row"><label>Endpoint</label><input id="goolEndpoint" placeholder="engage.cloudflareclient.com"></div>
     <div class="form-row"><label>Port</label><input id="goolPort" type="number" value="2408"></div>
     <div class="btn-row">
       <button onclick="closeModals()">Cancel</button>
       <button class="primary" onclick="createGoolPair()">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="addInnersModal">
+  <div class="modal">
+    <h3>Add Inner Accounts</h3>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:4px">Outer: <strong id="addInnersOuterName" style="color:var(--text)"></strong></p>
+    <input type="hidden" id="addInnersOuterID">
+    <div class="form-row" style="margin-top:12px"><label>Count</label><input id="addInnersCount" type="number" value="3" min="1" max="10"></div>
+    <div class="form-row"><label>Endpoint</label><input id="addInnersEndpoint" placeholder="engage.cloudflareclient.com"></div>
+    <div class="form-row"><label>Port</label><input id="addInnersPort" type="number" value="2408"></div>
+    <div class="btn-row">
+      <button onclick="closeModals()">Cancel</button>
+      <button class="primary" onclick="addGoolInners()">Add</button>
     </div>
   </div>
 </div>
@@ -474,22 +492,33 @@ async function refresh() {
     const tbody = document.getElementById('accountsTable');
     const outerIDs = new Set(accounts.filter(a => a.gool_outer_id).map(a => a.gool_outer_id));
     const accountMap = {};
-    accounts.forEach(a => { accountMap[a.id] = a; });
+    const innerCountByOuter = {};
+    accounts.forEach(a => {
+      accountMap[a.id] = a;
+      if (a.gool_outer_id) innerCountByOuter[a.gool_outer_id] = (innerCountByOuter[a.gool_outer_id] || 0) + 1;
+    });
     tbody.innerHTML = accounts.map(a => {
       const isOuter = outerIDs.has(a.id);
       const isInner = !!a.gool_outer_id;
       if (isOuter) {
+        const innerCount = innerCountByOuter[a.id] || 0;
+        const plural = innerCount !== 1 ? 's' : '';
         return `<tr class="row-outer">
-          <td>${esc(a.name)} <span style="color:var(--text3);font-size:11px">[outer tunnel]</span></td>
+          <td>${esc(a.name)} <span class="badge-outer">OUTER</span> <span style="color:var(--text2);font-size:11px">${innerCount} inner${plural}</span></td>
           <td>${esc(a.endpoint)}:${a.endpoint_port}</td>
           <td>${esc(a.ipv4)}</td>
-          <td style="color:var(--text3)">-</td>
+          <td id="ip-${a.id}" style="font-family:'SF Mono',Consolas,monospace;font-size:12px">${ipCache[a.id] ? esc(ipCache[a.id]) : '<span style="color:var(--text3)">-</span>'}</td>
           <td class="disabled">Outer</td>
-          <td class="actions"><span style="font-size:11px;color:var(--text3)">managed by inner</span></td>
+          <td class="actions">
+            <button onclick="checkIP('${a.id}',this)">IP</button>
+            <button onclick="showAddInnersModal('${a.id}','${esc(a.name)}')">+ Inners</button>
+            <button class="danger" onclick="deleteAccount('${a.id}','${esc(a.name)}',false,true,${innerCount})">Delete Group</button>
+          </td>
         </tr>`;
       }
+      const outerName = isInner && accountMap[a.gool_outer_id] ? accountMap[a.gool_outer_id].name : null;
       const nameCell = isInner
-        ? `${esc(a.name)} <span class="badge-gool">GOOL</span>`
+        ? `${esc(a.name)} <span class="badge-gool">GOOL</span>${outerName ? ` <span style="font-size:10px;color:var(--text3)">via ${esc(outerName)}</span>` : ''}`
         : esc(a.name);
       return `<tr>
         <td>${nameCell}</td>
@@ -501,7 +530,7 @@ async function refresh() {
           <button onclick="toggleAccount('${a.id}', ${!a.enabled})">${a.enabled ? 'Disable' : 'Enable'}</button>
           <button onclick="editEndpoint('${a.id}','${esc(a.endpoint)}',${a.endpoint_port})">Endpoint</button>
           <button onclick="checkIP('${a.id}',this)" ${a.enabled ? '' : 'disabled'}>IP</button>
-          <button class="danger" onclick="deleteAccount('${a.id}','${esc(a.name)}',${isInner})">Delete</button>
+          <button class="danger" onclick="deleteAccount('${a.id}','${esc(a.name)}',${isInner},false,0)">Delete</button>
         </td>
       </tr>`;
     }).join('');
@@ -536,19 +565,44 @@ function showAddModal() { document.getElementById('addModal').classList.add('sho
 function showBatchModal() { document.getElementById('batchModal').classList.add('show'); }
 function showGoolModal() { document.getElementById('goolModal').classList.add('show'); }
 
+function showAddInnersModal(outerId, outerName) {
+  document.getElementById('addInnersOuterID').value = outerId;
+  document.getElementById('addInnersOuterName').textContent = outerName;
+  document.getElementById('addInnersModal').classList.add('show');
+}
+
+async function addGoolInners() {
+  const outerId = document.getElementById('addInnersOuterID').value;
+  const count = parseInt(document.getElementById('addInnersCount').value) || 1;
+  const endpoint = document.getElementById('addInnersEndpoint').value;
+  const port = parseInt(document.getElementById('addInnersPort').value) || 2408;
+  if (!outerId) { toast('No outer account selected', 'error'); return; }
+  try {
+    const body = { count, endpoint, endpoint_port: port };
+    toast(`Registering ${count} inner account${count !== 1 ? 's' : ''}...`);
+    closeModals();
+    await api(`/api/accounts/gool/${outerId}/inner`, { method: 'POST', body: JSON.stringify(body) });
+    toast(`Added ${count} inner account${count !== 1 ? 's' : ''} — restart engine to apply`);
+    setPendingRestart(true);
+    setTimeout(refresh, 1500);
+  } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
+}
+
 async function createGoolPair() {
   const name = document.getElementById('goolName').value.trim();
   if (!name) { toast('Name is required', 'error'); return; }
+  const count = parseInt(document.getElementById('goolCount').value) || 1;
   try {
     const body = {
       name,
+      count,
       endpoint: document.getElementById('goolEndpoint').value,
       endpoint_port: parseInt(document.getElementById('goolPort').value) || 2408,
     };
-    toast('Registering gool pair...');
+    toast(`Registering gool group (1 outer + ${count} inner${count !== 1 ? 's' : ''})...`);
     closeModals();
     await api('/api/accounts/gool', { method: 'POST', body: JSON.stringify(body) });
-    toast('Gool pair created — restart engine to apply');
+    toast(`Gool group created — restart engine to apply`);
     setPendingRestart(true);
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
@@ -599,9 +653,14 @@ async function batchCreate() {
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
 
-async function deleteAccount(id, name, isGoolInner) {
-  let msg = `Delete account "${name}"?`;
-  if (isGoolInner) msg += '\n\nThis will also delete the associated outer tunnel account.';
+async function deleteAccount(id, name, isGoolInner, isOuter, innerCount) {
+  let msg = `Delete "${name}"?`;
+  if (isOuter) {
+    const plural = innerCount !== 1 ? 's' : '';
+    msg += `\n\nThis will also delete ${innerCount} inner account${plural}.`;
+  } else if (isGoolInner) {
+    msg += '\n\nThis will also delete the outer tunnel if it has no remaining inners.';
+  }
   if (!confirm(msg)) return;
   try {
     await api(`/api/accounts/${id}`, { method: 'DELETE' });
