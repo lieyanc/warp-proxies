@@ -92,6 +92,17 @@ func (s *Store) GetEnabledAccounts() []Account {
 	return out
 }
 
+func (s *Store) GetAccountByID(id string) (Account, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.accounts {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return Account{}, false
+}
+
 func (s *Store) AddAccount(a Account) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -122,6 +122,22 @@ func (c *Client) Register(name string, endpoint string, endpointPort uint16) (*s
 	return account, nil
 }
 
+// RegisterGoolPair registers two WARP accounts as a gool (WARP-in-WARP) pair.
+// The outer account acts as the underlying tunnel; the inner account routes through it.
+// Caller is responsible for persisting both returned accounts.
+func (c *Client) RegisterGoolPair(name, endpoint string, port uint16) (outer, inner *store.Account, err error) {
+	outer, err = c.Register(name+"-outer", endpoint, port)
+	if err != nil {
+		return nil, nil, fmt.Errorf("register outer: %w", err)
+	}
+	inner, err = c.Register(name, endpoint, port)
+	if err != nil {
+		return nil, nil, fmt.Errorf("register inner: %w", err)
+	}
+	inner.GoolOuterID = outer.ID
+	return outer, inner, nil
+}
+
 func (c *Client) Delete(id, token string) error {
 	req, err := http.NewRequest("DELETE", apiBase+"/"+id, nil)
 	if err != nil {

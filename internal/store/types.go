@@ -14,8 +14,11 @@ type Account struct {
 	IPv6          string    `json:"ipv6"`
 	Reserved      []uint8   `json:"reserved"`
 	Token         string    `json:"token"`
-	Enabled       bool      `json:"enabled"`
-	CreatedAt     time.Time `json:"created_at"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+	// GoolOuterID non-empty means this is a gool inner account.
+	// The value is the ID of the corresponding outer (primary) account.
+	GoolOuterID string `json:"gool_outer_id,omitempty"`
 }
 
 type Settings struct {

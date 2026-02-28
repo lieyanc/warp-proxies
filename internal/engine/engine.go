@@ -12,6 +12,21 @@ import (
 	"github.com/sagernet/sing-box/option"
 )
 
+// buildEngineContext creates a sing-box context that includes our custom
+// RoundRobin outbound type in addition to all built-in types.
+func buildEngineContext() context.Context {
+	outRegistry := include.OutboundRegistry()
+	RegisterRoundRobin(outRegistry)
+	return box.Context(
+		context.Background(),
+		include.InboundRegistry(),
+		outRegistry,
+		include.EndpointRegistry(),
+		include.DNSTransportRegistry(),
+		include.ServiceRegistry(),
+	)
+}
+
 type Engine struct {
 	mu        sync.Mutex
 	box       *box.Box
@@ -42,7 +57,7 @@ func (e *Engine) startLocked() error {
 		return fmt.Errorf("build options: %w", err)
 	}
 
-	ctx := include.Context(context.Background())
+	ctx := buildEngineContext()
 
 	instance, err := box.New(box.Options{
 		Context: ctx,

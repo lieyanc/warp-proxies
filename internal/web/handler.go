@@ -8,13 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -22,7 +21,7 @@ import (
 	"github.com/lieyan/warp-proxies/internal/store"
 	"github.com/lieyan/warp-proxies/internal/warp"
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/protocol/group"
+	M "github.com/sagernet/sing/common/metadata"
 )
 
 type Handler struct {
@@ -31,7 +30,6 @@ type Handler struct {
 	warpClient *warp.Client
 	version    string
 	binDir     string
-	ipCheckMu  sync.Mutex
 }
 
 func NewHandler(s *store.Store, e *engine.Engine, w *warp.Client, version, binDir string) *Handler {
@@ -84,6 +82,7 @@ func (h *Handler) GetAccounts(w http.ResponseWriter, r *http.Request) {
 		IPv6          string    `json:"ipv6"`
 		Enabled       bool      `json:"enabled"`
 		CreatedAt     time.Time `json:"created_at"`
+		GoolOuterID   string    `json:"gool_outer_id,omitempty"`
 	}
 
 	safe := make([]safeAccount, len(accounts))
@@ -99,6 +98,7 @@ func (h *Handler) GetAccounts(w http.ResponseWriter, r *http.Request) {
 			IPv6:          a.IPv6,
 			Enabled:       a.Enabled,
 			CreatedAt:     a.CreatedAt,
+			GoolOuterID:   a.GoolOuterID,
 		}
 	}
 
@@ -197,11 +197,67 @@ func (h *Handler) BatchCreateAccounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, results)
 }
 
+func (h *Handler) CreateGoolPair(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name         string `json:"name"`
+		Endpoint     string `json:"endpoint"`
+		EndpointPort uint16 `json:"endpoint_port"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	outer, inner, err := h.warpClient.RegisterGoolPair(req.Name, req.Endpoint, req.EndpointPort)
+	if err != nil {
+		slog.Error("register gool pair", "err", err)
+		writeError(w, http.StatusInternalServerError, "registration failed: "+err.Error())
+		return
+	}
+
+	if err := h.store.AddAccount(*outer); err != nil {
+		writeError(w, http.StatusInternalServerError, "save outer account: "+err.Error())
+		return
+	}
+	if err := h.store.AddAccount(*inner); err != nil {
+		writeError(w, http.StatusInternalServerError, "save inner account: "+err.Error())
+		return
+	}
+
+	slog.Info("registered gool pair", "name", req.Name, "outer_id", outer.ID, "inner_id", inner.ID)
+	go h.restartEngine()
+
+	writeJSON(w, http.StatusCreated, map[string]any{"outer": outer, "inner": inner})
+}
+
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "missing account id")
 		return
+	}
+
+	// Prevent direct deletion of an outer account while its inner account exists.
+	allAccounts := h.store.GetAccounts()
+	for _, a := range allAccounts {
+		if a.GoolOuterID == id {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("cannot delete outer account while inner account '%s' exists; delete the inner account first", a.Name))
+			return
+		}
+	}
+
+	// Check if the account being deleted is a gool inner (has a paired outer).
+	var goolOuterID string
+	for _, a := range allAccounts {
+		if a.ID == id {
+			goolOuterID = a.GoolOuterID
+			break
+		}
 	}
 
 	account, found, err := h.store.RemoveAccount(id)
@@ -214,10 +270,25 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to delete from CF (best effort)
+	// If this was an inner account, cascade-delete the paired outer account.
+	var outerAcc store.Account
+	var outerFound bool
+	if goolOuterID != "" {
+		outerAcc, outerFound, _ = h.store.RemoveAccount(goolOuterID)
+		if outerFound {
+			slog.Info("deleted paired outer WARP account", "name", outerAcc.Name, "id", outerAcc.ID)
+		}
+	}
+
+	// Try to delete from CF (best effort).
 	go func() {
 		if err := h.warpClient.Delete(account.ID, account.Token); err != nil {
 			slog.Warn("failed to delete account from CF", "id", account.ID, "err", err)
+		}
+		if outerFound {
+			if err := h.warpClient.Delete(outerAcc.ID, outerAcc.Token); err != nil {
+				slog.Warn("failed to delete outer account from CF", "id", outerAcc.ID, "err", err)
+			}
 		}
 	}()
 
@@ -317,10 +388,7 @@ func (h *Handler) restartEngine() {
 		return
 	}
 	accounts := h.store.GetEnabledAccounts()
-	var wgTags []string
-	for _, a := range accounts {
-		wgTags = append(wgTags, fmt.Sprintf("wg-%s", a.Name))
-	}
+	wgTags := engine.SelectorTagsForAccounts(accounts)
 	if len(wgTags) == 0 {
 		return
 	}
@@ -355,18 +423,34 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Persist mode change
+	settings := h.store.GetSettings()
+	prevMode := settings.RotationMode
+	settings.RotationMode = mode
+	if err := h.store.SetSettings(settings); err != nil {
+		slog.Error("persist mode switch", "err", err)
+		writeError(w, http.StatusInternalServerError, "save settings: "+err.Error())
+		return
+	}
+
+	// Switching to or from roundrobin requires a full engine restart because
+	// the outbound type in the sing-box config changes (RoundRobin ↔ Selector).
+	if mode == "roundrobin" || prevMode == "roundrobin" {
+		go h.restartEngine()
+		slog.Info("switched rotation mode (restarting engine)", "mode", mode)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "switched", "mode": mode})
+		return
+	}
+
+	// For urltest ↔ random: switch in-place without restarting
 	b := h.engine.Box()
 	if b == nil {
 		writeError(w, http.StatusServiceUnavailable, "engine not running")
 		return
 	}
 
-	// Build WG tags from enabled accounts
 	accounts := h.store.GetEnabledAccounts()
-	var wgTags []string
-	for _, a := range accounts {
-		wgTags = append(wgTags, fmt.Sprintf("wg-%s", a.Name))
-	}
+	wgTags := engine.SelectorTagsForAccounts(accounts)
 
 	if len(wgTags) == 0 {
 		writeError(w, http.StatusBadRequest, "no enabled accounts")
@@ -374,13 +458,6 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	engine.SwitchMode(b.Outbound(), mode, wgTags)
-
-	// Persist mode change
-	settings := h.store.GetSettings()
-	settings.RotationMode = mode
-	if err := h.store.SetSettings(settings); err != nil {
-		slog.Error("persist mode switch", "err", err)
-	}
 
 	// Update rotator
 	if engine.IsRotatingMode(mode) {
@@ -519,45 +596,24 @@ func (h *Handler) CheckAccountIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Lock so concurrent checks don't clobber each other's selector state
-	h.ipCheckMu.Lock()
-	defer h.ipCheckMu.Unlock()
-
-	proxyOut, ok := b.Outbound().Outbound("proxy")
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "proxy outbound not found")
-		return
-	}
-	sel, ok := proxyOut.(*group.Selector)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "proxy outbound is not a selector")
+	wgOut, loaded := b.Outbound().Outbound(wgTag)
+	if !loaded {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("WireGuard outbound %s not found", wgTag))
 		return
 	}
 
-	prevTag := sel.Now()
-	if !sel.SelectOutbound(wgTag) {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to select outbound %s", wgTag))
-		return
-	}
-	defer sel.SelectOutbound(prevTag)
-
-	// Route a request through the local HTTP proxy port
-	settings := h.store.GetSettings()
-	proxyHost := settings.ProxyHost
-	if proxyHost == "" || proxyHost == "0.0.0.0" {
-		proxyHost = "127.0.0.1"
-	}
-	proxyURL, _ := url.Parse(fmt.Sprintf("http://%s:%d", proxyHost, settings.HTTPPort))
-	if settings.ProxyUser != "" {
-		proxyURL.User = url.UserPassword(settings.ProxyUser, settings.ProxyPass)
-	}
-
+	// Dial directly through the WireGuard outbound. This avoids any interaction
+	// with the "proxy" Selector/RoundRobin and works regardless of rotation mode.
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	client := &http.Client{
-		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
-		Timeout:   15 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+				return wgOut.DialContext(dialCtx, network, M.ParseSocksaddr(addr))
+			},
+		},
+		Timeout: 15 * time.Second,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.ipify.org?format=json", nil)

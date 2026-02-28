@@ -101,9 +101,10 @@ func (r *Rotator) Mode() string {
 	return r.mode
 }
 
-// SwitchMode switches the rotation mode at runtime.
+// SwitchMode switches the rotation mode at runtime for urltest/random modes.
 // For "urltest": select "auto" in the selector.
-// For "random"/"roundrobin": select an individual wg tag.
+// For "random": select a random individual wg tag.
+// "roundrobin" is not handled here — it requires an engine restart.
 func SwitchMode(outboundMgr adapter.OutboundManager, mode string, wgTags []string) bool {
 	proxyOut, ok := outboundMgr.Outbound("proxy")
 	if !ok {
@@ -123,11 +124,6 @@ func SwitchMode(outboundMgr adapter.OutboundManager, mode string, wgTags []strin
 			return false
 		}
 		return selector.SelectOutbound(wgTags[rand.IntN(len(wgTags))])
-	case "roundrobin":
-		if len(wgTags) == 0 {
-			return false
-		}
-		return selector.SelectOutbound(wgTags[0])
 	}
 	return false
 }
@@ -144,6 +140,7 @@ func GetCurrentOutbound(outboundMgr adapter.OutboundManager) string {
 }
 
 // IsRotatingMode returns true if the mode needs a Rotator goroutine.
+// "roundrobin" is handled natively per-connection inside sing-box, so it does not.
 func IsRotatingMode(mode string) bool {
-	return mode == "random" || mode == "roundrobin"
+	return mode == "random"
 }
