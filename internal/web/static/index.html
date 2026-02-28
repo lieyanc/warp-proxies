@@ -63,6 +63,9 @@ button.danger{border-color:rgba(244,63,94,.3);color:var(--red)}
 button.danger:hover{background:var(--red);border-color:var(--red);color:#fff}
 button.update-available{background:var(--green);border-color:var(--green);color:#fff;font-weight:600}
 button.update-available:hover{background:#0ea472;border-color:#0ea472;color:#fff}
+button.pending-restart{background:#f59e0b;border-color:#f59e0b;color:#fff;font-weight:600;animation:pendingPulse 2s ease-in-out infinite}
+button.pending-restart:hover{background:#d97706;border-color:#d97706;color:#fff}
+@keyframes pendingPulse{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.4)}50%{box-shadow:0 0 0 6px rgba(245,158,11,0)}}
 
 /* Mode toggle */
 .mode-toggle{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg)}
@@ -209,7 +212,7 @@ input::placeholder{color:var(--text3)}
       <button class="primary" onclick="showAddModal()">+ Add Account</button>
       <button onclick="showBatchModal()">+ Batch Add</button>
       <button onclick="showGoolModal()">+ Gool Pair</button>
-      <button onclick="restartEngine()">Restart Engine</button>
+      <button id="btnRestart" onclick="restartEngine()">Restart Engine</button>
       <button onclick="showSettingsModal()">Settings</button>
       <button id="btnUpdate" onclick="triggerUpdate()">Update</button>
     </div>
@@ -314,6 +317,20 @@ input::placeholder{color:var(--text3)}
 const API = '';
 let refreshTimer = null;
 const ipCache = {};
+let pendingRestart = false;
+
+function setPendingRestart(val) {
+  pendingRestart = val;
+  const btn = document.getElementById('btnRestart');
+  if (!btn) return;
+  if (val) {
+    btn.classList.add('pending-restart');
+    btn.textContent = 'Restart Engine (!)';
+  } else {
+    btn.classList.remove('pending-restart');
+    btn.textContent = 'Restart Engine';
+  }
+}
 
 // Auth helpers
 function getAuth() { return localStorage.getItem('warp_auth'); }
@@ -500,7 +517,8 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 async function switchMode(mode) {
   try {
     await api('/api/engine/mode', { method: 'POST', body: JSON.stringify({ mode }) });
-    toast(`Switched to ${mode} mode`);
+    toast(`Mode set to ${mode} — restart engine to apply`);
+    setPendingRestart(true);
     refresh();
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
@@ -508,6 +526,7 @@ async function switchMode(mode) {
 async function restartEngine() {
   try {
     await api('/api/engine/restart', { method: 'POST' });
+    setPendingRestart(false);
     toast('Engine restarting...');
     setTimeout(refresh, 1000);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
@@ -529,7 +548,8 @@ async function createGoolPair() {
     toast('Registering gool pair...');
     closeModals();
     await api('/api/accounts/gool', { method: 'POST', body: JSON.stringify(body) });
-    toast('Gool pair created');
+    toast('Gool pair created — restart engine to apply');
+    setPendingRestart(true);
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
@@ -556,7 +576,8 @@ async function createAccount() {
       endpoint_port: parseInt(document.getElementById('addPort').value) || 2408,
     };
     await api('/api/accounts', { method: 'POST', body: JSON.stringify(body) });
-    toast('Account registered');
+    toast('Account registered — restart engine to apply');
+    setPendingRestart(true);
     closeModals();
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
@@ -572,7 +593,8 @@ async function batchCreate() {
     toast('Batch registration started...');
     closeModals();
     await api('/api/accounts/batch', { method: 'POST', body: JSON.stringify(body) });
-    toast('Batch registration complete');
+    toast('Batch registration complete — restart engine to apply');
+    setPendingRestart(true);
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
@@ -583,7 +605,8 @@ async function deleteAccount(id, name, isGoolInner) {
   if (!confirm(msg)) return;
   try {
     await api(`/api/accounts/${id}`, { method: 'DELETE' });
-    toast('Account deleted');
+    toast('Account deleted — restart engine to apply');
+    setPendingRestart(true);
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
@@ -591,7 +614,8 @@ async function deleteAccount(id, name, isGoolInner) {
 async function toggleAccount(id, enabled) {
   try {
     await api(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
-    toast(enabled ? 'Account enabled' : 'Account disabled');
+    toast((enabled ? 'Account enabled' : 'Account disabled') + ' — restart engine to apply');
+    setPendingRestart(true);
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
 }
@@ -611,7 +635,8 @@ async function saveEndpoint() {
       endpoint_port: parseInt(document.getElementById('editPort').value),
     };
     await api(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
-    toast('Endpoint updated');
+    toast('Endpoint updated — restart engine to apply');
+    setPendingRestart(true);
     closeModals();
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
@@ -630,7 +655,8 @@ async function saveSettings() {
       clash_api_secret: document.getElementById('setClashSecret').value,
     };
     await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
-    toast('Settings saved');
+    toast('Settings saved — restart engine to apply');
+    setPendingRestart(true);
     closeModals();
     setTimeout(refresh, 1500);
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }

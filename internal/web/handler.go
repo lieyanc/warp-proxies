@@ -134,8 +134,6 @@ func (h *Handler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("registered WARP account", "name", account.Name, "id", account.ID)
 
-	go h.restartEngine()
-
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"id":   account.ID,
 		"name": account.Name,
@@ -192,8 +190,6 @@ func (h *Handler) BatchCreateAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	go h.restartEngine()
-
 	writeJSON(w, http.StatusCreated, results)
 }
 
@@ -229,7 +225,6 @@ func (h *Handler) CreateGoolPair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("registered gool pair", "name", req.Name, "outer_id", outer.ID, "inner_id", inner.ID)
-	go h.restartEngine()
 
 	writeJSON(w, http.StatusCreated, map[string]any{"outer": outer, "inner": inner})
 }
@@ -292,8 +287,6 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	go h.restartEngine()
-
 	slog.Info("deleted WARP account", "name", account.Name, "id", account.ID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
@@ -316,23 +309,18 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	needRestart := false
 	err := h.store.UpdateAccount(id, func(a *store.Account) {
 		if req.Name != nil {
 			a.Name = *req.Name
-			needRestart = true
 		}
 		if req.Enabled != nil {
 			a.Enabled = *req.Enabled
-			needRestart = true
 		}
 		if req.Endpoint != nil {
 			a.Endpoint = *req.Endpoint
-			needRestart = true
 		}
 		if req.EndpointPort != nil {
 			a.EndpointPort = *req.EndpointPort
-			needRestart = true
 		}
 	})
 	if err != nil {
@@ -342,10 +330,6 @@ func (h *Handler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "update account: "+err.Error())
 		return
-	}
-
-	if needRestart {
-		go h.restartEngine()
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
@@ -366,8 +350,6 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "save settings: "+err.Error())
 		return
 	}
-
-	go h.restartEngine()
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
@@ -423,9 +405,7 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist mode change
 	settings := h.store.GetSettings()
-	prevMode := settings.RotationMode
 	settings.RotationMode = mode
 	if err := h.store.SetSettings(settings); err != nil {
 		slog.Error("persist mode switch", "err", err)
@@ -433,54 +413,8 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Switching to or from roundrobin requires a full engine restart because
-	// the outbound type in the sing-box config changes (RoundRobin ↔ Selector).
-	if mode == "roundrobin" || prevMode == "roundrobin" {
-		go h.restartEngine()
-		slog.Info("switched rotation mode (restarting engine)", "mode", mode)
-		writeJSON(w, http.StatusOK, map[string]string{"status": "switched", "mode": mode})
-		return
-	}
-
-	// For urltest ↔ random: switch in-place without restarting
-	b := h.engine.Box()
-	if b == nil {
-		writeError(w, http.StatusServiceUnavailable, "engine not running")
-		return
-	}
-
-	accounts := h.store.GetEnabledAccounts()
-	wgTags := engine.SelectorTagsForAccounts(accounts)
-
-	if len(wgTags) == 0 {
-		writeError(w, http.StatusBadRequest, "no enabled accounts")
-		return
-	}
-
-	engine.SwitchMode(b.Outbound(), mode, wgTags)
-
-	// Update rotator
-	if engine.IsRotatingMode(mode) {
-		rotator := engine.NewRotator(
-			mode,
-			time.Duration(settings.RandomInterval)*time.Second,
-			wgTags,
-			func() adapter.OutboundManager {
-				bx := h.engine.Box()
-				if bx == nil {
-					return nil
-				}
-				return bx.Outbound()
-			},
-		)
-		h.engine.SetRotator(rotator)
-		rotator.Start()
-	} else {
-		h.engine.SetRotator(nil)
-	}
-
-	slog.Info("switched rotation mode", "mode", mode)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "switched", "mode": mode})
+	slog.Info("saved rotation mode (pending restart)", "mode", mode)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved", "mode": mode})
 }
 
 func (h *Handler) GetVersion(w http.ResponseWriter, r *http.Request) {
