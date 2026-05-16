@@ -73,6 +73,10 @@ button.pending-restart:hover{background:#d97706;border-color:#d97706;color:#fff}
 .mode-toggle button:hover{background:var(--accent-bg);color:var(--accent)}
 .mode-toggle button.active{background:var(--accent);color:#fff}
 .mode-toggle button.active:hover{background:var(--accent2)}
+.fixed-control{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface2)}
+.fixed-control.active{border-color:var(--accent-border);background:var(--accent-bg)}
+.fixed-control label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;font-weight:700;white-space:nowrap}
+.fixed-control select{min-width:180px;height:32px;padding:5px 8px;background:var(--bg)}
 
 /* Table */
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -209,6 +213,12 @@ input::placeholder{color:var(--text3)}
         <button id="btnRandom" onclick="switchMode('random')">Random</button>
         <button id="btnRoundrobin" onclick="switchMode('roundrobin')">RoundRobin</button>
         <button id="btnFixed" onclick="switchMode('fixed')">Fixed</button>
+      </div>
+      <div class="fixed-control" id="fixedControl">
+        <label for="fixedAccountSelect">Fixed Node</label>
+        <select id="fixedAccountSelect" onchange="switchFixedAccount(this.value)">
+          <option value="">First enabled account</option>
+        </select>
       </div>
       <button class="primary" onclick="showAddModal()">+ Add Account</button>
       <button onclick="showBatchModal()">+ Batch Add</button>
@@ -449,6 +459,28 @@ function closeModals() {
   document.querySelectorAll('.modal-overlay').forEach(m => m.classList.remove('show'));
 }
 
+function getSelectableFixedAccounts(accounts) {
+  const outerIDs = new Set(accounts.filter(a => a.gool_outer_id).map(a => a.gool_outer_id));
+  return accounts.filter(a => a.enabled && !outerIDs.has(a.id));
+}
+
+function fixedAccountOptions(accounts, selectedId = '') {
+  const selectable = getSelectableFixedAccounts(accounts);
+  if (!selectable.length) return '<option value="">No enabled accounts</option>';
+  return '<option value="">First enabled account</option>' + selectable.map(a => {
+    const selected = a.id === selectedId ? ' selected' : '';
+    return `<option value="${escAttr(a.id)}"${selected}>${esc(a.name)}</option>`;
+  }).join('');
+}
+
+function renderFixedAccountSelect(accounts, selectedId = '') {
+  const select = document.getElementById('fixedAccountSelect');
+  if (!select) return;
+  const selectable = getSelectableFixedAccounts(accounts);
+  select.innerHTML = fixedAccountOptions(accounts, selectedId);
+  select.disabled = selectable.length === 0;
+}
+
 async function refresh() {
   try {
     const [status, accounts] = await Promise.all([
@@ -473,6 +505,8 @@ async function refresh() {
     document.getElementById('btnRandom').classList.toggle('active', status.mode === 'random');
     document.getElementById('btnRoundrobin').classList.toggle('active', status.mode === 'roundrobin');
     document.getElementById('btnFixed').classList.toggle('active', status.mode === 'fixed');
+    document.getElementById('fixedControl').classList.toggle('active', status.mode === 'fixed');
+    renderFixedAccountSelect(accounts, status.fixed_account_id || '');
 
     const tbody = document.getElementById('accountsTable');
     const outerIDs = new Set(accounts.filter(a => a.gool_outer_id).map(a => a.gool_outer_id));
@@ -516,14 +550,25 @@ async function refresh() {
 }
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); }
 
-async function switchMode(mode) {
+async function switchMode(mode, fixedAccountId) {
   try {
-    await api('/api/engine/mode', { method: 'POST', body: JSON.stringify({ mode }) });
-    toast(`Mode set to ${mode} — restart engine to apply`);
+    const body = { mode };
+    if (mode === 'fixed') {
+      body.fixed_account_id = fixedAccountId !== undefined
+        ? fixedAccountId
+        : (document.getElementById('fixedAccountSelect')?.value || '');
+    }
+    await api('/api/engine/mode', { method: 'POST', body: JSON.stringify(body) });
+    toast(mode === 'fixed' ? 'Fixed node saved - restart engine to apply' : `Mode set to ${mode} - restart engine to apply`);
     setPendingRestart(true);
     refresh();
   } catch (e) { if (e.message !== 'unauthorized') toast(e.message, 'error'); }
+}
+
+function switchFixedAccount(fixedAccountId) {
+  switchMode('fixed', fixedAccountId);
 }
 
 async function restartEngine() {
@@ -562,11 +607,8 @@ async function showSettingsModal() {
     const [s, accounts] = await Promise.all([api('/api/settings'), api('/api/accounts')]);
     document.getElementById('setProxyHost').value = s.proxy_host;
     const select = document.getElementById('setFixedAccount');
-    const selectable = accounts.filter(a => a.enabled && !accounts.some(x => x.gool_outer_id === a.id));
-    select.innerHTML = '<option value="">First enabled account</option>' + selectable.map(a => {
-      const selected = a.id === s.fixed_account_id ? ' selected' : '';
-      return `<option value="${a.id}"${selected}>${esc(a.name)}</option>`;
-    }).join('');
+    select.innerHTML = fixedAccountOptions(accounts, s.fixed_account_id || '');
+    select.disabled = getSelectableFixedAccounts(accounts).length === 0;
     document.getElementById('setUrl').value = s.urltest_url;
     document.getElementById('setInterval').value = s.urltest_interval;
     document.getElementById('setTolerance').value = s.urltest_tolerance;

@@ -148,7 +148,7 @@ PUT /api/settings               # 更新设置（完整替换）
 
 ```
 POST /api/engine/restart        # 重启 sing-box 引擎
-POST /api/engine/mode           # 切换轮换模式  {"mode":"urltest"}
+POST /api/engine/mode           # 切换轮换模式  {"mode":"fixed","fixed_account_id":"..."}
 ```
 
 ## 架构

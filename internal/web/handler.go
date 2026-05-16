@@ -55,10 +55,11 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	settings := h.store.GetSettings()
 
 	status := map[string]any{
-		"running":       h.engine.IsRunning(),
-		"mode":          settings.RotationMode,
-		"account_count": len(accounts),
-		"current":       "",
+		"running":          h.engine.IsRunning(),
+		"mode":             settings.RotationMode,
+		"fixed_account_id": settings.FixedAccountID,
+		"account_count":    len(accounts),
+		"current":          "",
 	}
 
 	b := h.engine.Box()
@@ -392,7 +393,8 @@ func (h *Handler) restartEngine() {
 
 func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Mode string `json:"mode"`
+		Mode           string  `json:"mode"`
+		FixedAccountID *string `json:"fixed_account_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -407,6 +409,9 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 
 	settings := h.store.GetSettings()
 	settings.RotationMode = mode
+	if req.FixedAccountID != nil {
+		settings.FixedAccountID = strings.TrimSpace(*req.FixedAccountID)
+	}
 	if err := h.store.SetSettings(settings); err != nil {
 		slog.Error("persist mode switch", "err", err)
 		writeError(w, http.StatusInternalServerError, "save settings: "+err.Error())
