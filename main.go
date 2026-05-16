@@ -103,10 +103,7 @@ func main() {
 func startRotator(eng *engine.Engine, s *store.Store) {
 	settings := s.GetSettings()
 	accounts := s.GetEnabledAccounts()
-	var wgTags []string
-	for _, a := range accounts {
-		wgTags = append(wgTags, fmt.Sprintf("wg-%s", a.Name))
-	}
+	wgTags := engine.SelectorTagsForAccounts(accounts)
 	rotator := engine.NewRotator(
 		settings.RotationMode,
 		time.Duration(settings.RandomInterval)*time.Second,

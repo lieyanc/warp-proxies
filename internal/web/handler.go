@@ -400,8 +400,8 @@ func (h *Handler) SwitchMode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mode := strings.ToLower(req.Mode)
-	if mode != "urltest" && mode != "random" && mode != "roundrobin" {
-		writeError(w, http.StatusBadRequest, "mode must be 'urltest', 'random', or 'roundrobin'")
+	if mode != "urltest" && mode != "random" && mode != "roundrobin" && mode != "fixed" {
+		writeError(w, http.StatusBadRequest, "mode must be 'urltest', 'random', 'roundrobin', or 'fixed'")
 		return
 	}
 

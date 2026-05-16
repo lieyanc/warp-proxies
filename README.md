@@ -10,7 +10,7 @@
 - **多账户管理** — 支持批量创建、启用/禁用、删除 WARP 账户
 - **双协议代理** — 同时提供 SOCKS5 和 HTTP/HTTPS 代理入站
 - **智能出站** — 双层出站架构：Selector → URLTest → WireGuard×N
-- **轮换模式** — `urltest` 自动延迟测试选优 / `random` 定时随机切换
+- **轮换模式** — `urltest` 自动延迟测试选优 / `random` 定时随机切换 / `roundrobin` 每连接轮询 / `fixed` 固定出站
 - **Web 管理面板** — 内置 SPA 管理界面，Basic Auth 认证
 - **Clash API** — 兼容 Clash API，可配合外部面板使用
 - **单文件部署** — 静态编译，无 CGO 依赖，~21MB 开箱即用
@@ -95,6 +95,7 @@ make build-linux-arm64  # Linux arm64
   "web_user": "admin",
   "web_pass": "admin",
   "rotation_mode": "urltest",
+  "fixed_account_id": "",
   "urltest_url": "https://www.gstatic.com/generate_204",
   "urltest_interval": 300,
   "urltest_tolerance": 50,
@@ -110,7 +111,8 @@ make build-linux-arm64  # Linux arm64
 | `socks_port` / `http_port` | 代理端口 |
 | `proxy_user` / `proxy_pass` | 代理认证（留空则无认证） |
 | `web_addr` / `web_user` / `web_pass` | WebUI 地址和 Basic Auth 凭据 |
-| `rotation_mode` | 轮换模式：`urltest`（延迟最优）或 `random`（随机切换） |
+| `rotation_mode` | 轮换模式：`urltest`（延迟最优）、`random`（随机切换）、`roundrobin`（每连接轮询）或 `fixed`（固定出站） |
+| `fixed_account_id` | `fixed` 模式使用的账户 ID；留空时使用第一个可用账户 |
 | `urltest_*` | URLTest 相关参数（测试地址、间隔秒数、容差 ms） |
 | `random_interval` | 随机轮换间隔（秒） |
 | `clash_api_port` | Clash API 端口（设为 0 关闭） |

@@ -13,7 +13,7 @@ import (
 
 type Rotator struct {
 	mu       sync.Mutex
-	mode     string // "urltest", "random", or "roundrobin"
+	mode     string // "random"
 	interval time.Duration
 	tags     []string
 	index    atomic.Int64
@@ -33,7 +33,7 @@ func NewRotator(mode string, interval time.Duration, tags []string, getBox func(
 }
 
 func (r *Rotator) Start() {
-	if (r.mode != "random" && r.mode != "roundrobin") || len(r.tags) == 0 {
+	if r.mode != "random" || len(r.tags) == 0 {
 		return
 	}
 	go r.run()
@@ -74,9 +74,6 @@ func (r *Rotator) rotate() {
 	switch r.mode {
 	case "random":
 		tag = r.tags[rand.IntN(len(r.tags))]
-	case "roundrobin":
-		idx := r.index.Add(1) - 1
-		tag = r.tags[int(idx)%len(r.tags)]
 	default:
 		return
 	}
@@ -101,10 +98,11 @@ func (r *Rotator) Mode() string {
 	return r.mode
 }
 
-// SwitchMode switches the rotation mode at runtime for urltest/random modes.
+// SwitchMode switches the selected outbound at runtime for selector-backed modes.
 // For "urltest": select "auto" in the selector.
 // For "random": select a random individual wg tag.
-// "roundrobin" is not handled here — it requires an engine restart.
+// For "fixed": select the first provided wg tag.
+// "roundrobin" is not handled here; it requires an engine restart.
 func SwitchMode(outboundMgr adapter.OutboundManager, mode string, wgTags []string) bool {
 	proxyOut, ok := outboundMgr.Outbound("proxy")
 	if !ok {
@@ -124,6 +122,11 @@ func SwitchMode(outboundMgr adapter.OutboundManager, mode string, wgTags []strin
 			return false
 		}
 		return selector.SelectOutbound(wgTags[rand.IntN(len(wgTags))])
+	case "fixed":
+		if len(wgTags) == 0 {
+			return false
+		}
+		return selector.SelectOutbound(wgTags[0])
 	}
 	return false
 }

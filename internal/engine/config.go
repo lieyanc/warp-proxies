@@ -105,6 +105,29 @@ func SelectorTagsForAccounts(accounts []store.Account) []string {
 	return tags
 }
 
+func containsTag(tags []string, target string) bool {
+	for _, tag := range tags {
+		if tag == target {
+			return true
+		}
+	}
+	return false
+}
+
+func fixedOutboundTag(accounts []store.Account, selectorTags []string, fixedAccountID string) string {
+	if len(selectorTags) == 0 {
+		return ""
+	}
+	if fixedAccountID == "" {
+		return selectorTags[0]
+	}
+	tag := WGTagForAccount(accounts, fixedAccountID)
+	if containsTag(selectorTags, tag) {
+		return tag
+	}
+	return selectorTags[0]
+}
+
 // buildWGOutboundOptions creates a LegacyWireGuardOutboundOptions for the given account.
 // mtu is the WireGuard MTU (1280 for single/inner, 1330 for gool outer).
 // detour is the outbound tag to route WireGuard UDP through; empty means direct.
@@ -296,7 +319,8 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 		return nil, ErrNoAccounts
 	}
 
-	if settings.RotationMode == "roundrobin" {
+	switch settings.RotationMode {
+	case "roundrobin":
 		// Per-connection round-robin: custom outbound cycles through all WG
 		// outbounds atomically on each DialContext call. No URLTest needed.
 		outbounds = append(outbounds, option.Outbound{
@@ -304,14 +328,29 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 			Tag:     "proxy",
 			Options: &RoundRobinOptions{Outbounds: selectorTags},
 		})
-	} else {
-		// URLTest group (used by urltest and random modes)
+	case "random", "fixed":
+		defaultTag := selectorTags[0]
+		if settings.RotationMode == "fixed" {
+			defaultTag = fixedOutboundTag(accounts, selectorTags, settings.FixedAccountID)
+		}
+		selectorOpts := &option.SelectorOutboundOptions{
+			Outbounds:                 selectorTags,
+			Default:                   defaultTag,
+			InterruptExistConnections: false,
+		}
+		outbounds = append(outbounds, option.Outbound{
+			Type:    C.TypeSelector,
+			Tag:     "proxy",
+			Options: selectorOpts,
+		})
+	default:
+		// URLTest group (used only by urltest mode)
 		urltestOpts := &option.URLTestOutboundOptions{
 			Outbounds:                 selectorTags,
 			URL:                       settings.URLTestURL,
 			Interval:                  badoption.Duration(time.Duration(settings.URLTestInterval) * time.Second),
 			Tolerance:                 settings.URLTestTolerance,
-			InterruptExistConnections: true,
+			InterruptExistConnections: false,
 		}
 		outbounds = append(outbounds, option.Outbound{
 			Type:    C.TypeURLTest,
@@ -323,15 +362,10 @@ func BuildOptions(accounts []store.Account, settings store.Settings) (*option.Op
 		selTags := []string{"auto"}
 		selTags = append(selTags, selectorTags...)
 
-		defaultTag := "auto"
-		if settings.RotationMode == "random" {
-			defaultTag = selectorTags[0]
-		}
-
 		selectorOpts := &option.SelectorOutboundOptions{
 			Outbounds:                 selTags,
-			Default:                   defaultTag,
-			InterruptExistConnections: true,
+			Default:                   "auto",
+			InterruptExistConnections: false,
 		}
 		outbounds = append(outbounds, option.Outbound{
 			Type:    C.TypeSelector,
